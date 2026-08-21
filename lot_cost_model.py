@@ -3,6 +3,7 @@ import openpyxl
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.utils import get_column_letter
 import pandas as pd
 
 # ============================================================================
@@ -1452,6 +1453,18 @@ def generate_fit_chart_data(
 # ============================================================================
 # 6. EXCEL WORKBOOK & SCATTER CHART GENERATOR (FIXED OPENPYXL TICK MARKS)
 # ============================================================================
+#: A default Excel column is roughly 1.72 cm wide. Chart anchors are spaced off
+#: this so widening a chart cannot silently overlap the one beside it.
+_COL_CM = 1.72
+
+
+def _chart_anchor(index: int, width_cm: float, start_col: int = 2,
+                  row: int = 10) -> str:
+    """Anchor cell for the nth chart in a left-to-right row of charts."""
+    step = int(width_cm / _COL_CM) + 4  # +4 columns of breathing room
+    return f"{get_column_letter(start_col + index * step)}{row}"
+
+
 def _format_chart(
     chart,
     title: str,
@@ -1541,18 +1554,25 @@ def save_complete_excel_workbook(
     ws = wb["Fit_Chart_Data"]
     max_r = len(chart_df) + 1  # 1-indexed including header
 
+    fit_chart_width = 18
+
     def build_scatter_chart(
         title: str,
         x_col: int,
         actual_col: int,
         est_col: int,
-        chart_cell: str,
+        slot: int,
         x_axis_title_text: str,
         y_axis_title_text: str = "Unit Cost / AUC ($K)",
     ):
         chart = ScatterChart()
         _format_chart(
-            chart, title, x_axis_title_text, y_axis_title_text, 18, 11
+            chart,
+            title,
+            x_axis_title_text,
+            y_axis_title_text,
+            fit_chart_width,
+            11,
         )
 
         x_values = Reference(
@@ -1590,7 +1610,7 @@ def save_complete_excel_workbook(
 
         chart.series.append(s_act)
         chart.series.append(s_est)
-        ws.add_chart(chart, chart_cell)
+        ws.add_chart(chart, _chart_anchor(slot, fit_chart_width))
 
     # Chart 1: Learning Curve (LC) Fit -> X = LC Midpoint (Col 6), Y = Actual (Col 5) vs LC_Est (Col 7)
     build_scatter_chart(
@@ -1598,7 +1618,7 @@ def save_complete_excel_workbook(
         x_col=6,
         actual_col=5,
         est_col=7,
-        chart_cell="B10",
+        slot=0,
         x_axis_title_text="LC Lot Midpoint (Unit Number)",
         y_axis_title_text="Unit Cost / AUC ($K)",
     )
@@ -1609,7 +1629,7 @@ def save_complete_excel_workbook(
         x_col=2,
         actual_col=5,
         est_col=10,
-        chart_cell="L10",
+        slot=1,
         x_axis_title_text="Analogy Lot Quantity (Units / Lot)",
         y_axis_title_text="Unit Cost / AUC ($K)",
     )
@@ -1620,7 +1640,7 @@ def save_complete_excel_workbook(
         x_col=13,
         actual_col=5,
         est_col=14,
-        chart_cell="V10",
+        slot=2,
         x_axis_title_text="LC+Rate Lot Midpoint (Unit Number)",
         y_axis_title_text="Unit Cost / AUC ($K)",
     )
