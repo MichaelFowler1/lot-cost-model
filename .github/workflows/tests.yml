@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The full suite, including the cost_core bridge. cost_core needs 3.11+.
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # lot_cost_model imports tkinter at module scope. Importing it is enough
+      # for these tests; no window is ever created, so no display is needed.
+      - name: Install Tk
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Check tkinter imports
+        run: python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install "git+https://github.com/MichaelFowler1/cost-risk-toolkit.git"
+
+      - name: Confirm cost_core is present
+        run: python -c "import risk; assert risk.AVAILABLE, risk.IMPORT_ERROR; print('cost_core ok')"
+
+      - name: Run tests
+        run: pytest -v
+
+  # The tool must also work with cost_core absent: the Risk tab goes dark and
+  # everything else carries on. 3.10 is the floor, because the source uses
+  # PEP 604 annotations.
+  without-cost-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Tk
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Confirm cost_core is absent
+        run: python -c "import risk; assert not risk.AVAILABLE; print('correctly unavailable')"
+
+      - name: Run tests
+        run: pytest -v

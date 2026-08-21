@@ -60,6 +60,60 @@ def unit_spans(quantities, prior_units: int = 0) -> np.ndarray:
     return np.column_stack([cums - q + 1, cums]).astype(int)
 
 
+#: Private hook on ``LotFitReport`` that decides which units each forecast lot
+#: covers. We redirect it so a buy can be priced from unit 1 as well as as a
+#: continuation. Being private, it could move in any cost_core release, so
+#: every use is verified rather than trusted -- see :class:`_SpanRedirect`.
+SPAN_HOOK = "_forecast_spans"
+
+
+def _hook_gone_message(detail: str) -> str:
+    return (
+        "The risk simulation could not be pinned to the same lots as the "
+        f"intervals: {detail}.\n\n"
+        f"This tool redirects cost_core's private {SPAN_HOOK}() so a buy can "
+        "be priced from unit 1 rather than only as a continuation of the "
+        "analogy programme. A cost_core upgrade appears to have changed it.\n\n"
+        "The intervals on the forecast lots are unaffected and still correct. "
+        "Only the Monte Carlo is refused, because silently simulating the "
+        "wrong lots would be worse than not simulating at all."
+    )
+
+
+class _SpanRedirect:
+    """Stand-in for cost_core's span helper that records being called.
+
+    A plain lambda would leave no trace, so if a future cost_core stopped
+    calling the hook the simulation would quietly run on its own lot
+    positions and report confident numbers for the wrong buy. This counts
+    the calls so that failure becomes loud.
+    """
+
+    def __init__(self, spans):
+        self.spans = spans
+        self.calls = 0
+
+    def __call__(self, quantities):
+        self.calls += 1
+        return self.spans
+
+
+def _scurve_frame(totals, step: int = 1) -> pd.DataFrame:
+    """Cumulative distribution of the buy total, as a percentile table.
+
+    The simulation produces tens of thousands of draws. Writing every one to
+    a worksheet is useless; the readable form is the S-curve, which is just
+    those draws read back at each percentile.
+    """
+    pct = np.arange(step, 100, step)
+    return pd.DataFrame(
+        {
+            "Percentile": pct / 100.0,
+            "Buy Total ($)": np.round(np.percentile(totals, pct), 2),
+        }
+    )
+
+
 def _maybe_call(obj, name):
     """Read an attribute that cost_core may expose as a value or a method."""
     attr = getattr(obj, name, None)
@@ -114,6 +168,7 @@ class RiskResult:
     sim_cv: float | None = None
     point_percentile: float | None = None
     n_iter: int | None = None
+    scurve: pd.DataFrame | None = None
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -318,7 +373,12 @@ def _simulate(
         program=opts.program,
     )
     report = LotFitReport(series=series, fit=fit)
-    object.__setattr__(report, "_forecast_spans", lambda q: fspans)
+
+    if not callable(getattr(report, SPAN_HOOK, None)):
+        raise RuntimeError(_hook_gone_message("it no longer exists"))
+
+    redirect = _SpanRedirect(fspans)
+    object.__setattr__(report, SPAN_HOOK, redirect)
 
     with _warnings.catch_warnings(record=True) as caught:
         _warnings.simplefilter("always")
@@ -333,6 +393,27 @@ def _simulate(
         text = str(w.message)
         if text not in result.warnings:
             result.warnings.append(text)
+
+    if redirect.calls == 0:
+        raise RuntimeError(
+            _hook_gone_message("simulate_forecast never called it")
+        )
+
+    # Belt and braces: check the answer, not just the mechanism. cost_core
+    # reports the deterministic cost of the lots it actually simulated, so if
+    # that matches the same sum over our spans, our spans are the ones it used.
+    expected = float(
+        np.sum(fit.model.lot_cost(fspans[:, 0], fspans[:, 1]))
+    )
+    got = float(sim.point_estimate)
+    if not np.isclose(got, expected, rtol=1e-9, atol=0.0):
+        raise RuntimeError(
+            _hook_gone_message(
+                "it ran against different lots than the intervals "
+                f"(simulated {got:,.2f} where these lots cost "
+                f"{expected:,.2f})"
+            )
+        )
 
     # Apply the complexity factors lot by lot, then re-percentile the total.
     per_lot = np.asarray(sim.per_lot, dtype=float)
@@ -353,6 +434,7 @@ def _simulate(
         (totals < result.total_point).mean() * 100.0
     )
     result.n_iter = int(opts.n_iter)
+    result.scurve = _scurve_frame(totals)
 
 
 def summary_frame(res: RiskResult) -> pd.DataFrame:

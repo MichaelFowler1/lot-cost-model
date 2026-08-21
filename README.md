@@ -1,5 +1,7 @@
 # Lot Cost Model
 
+[![tests](https://github.com/MichaelFowler1/lot-cost-model/actions/workflows/tests.yml/badge.svg)](https://github.com/MichaelFowler1/lot-cost-model/actions/workflows/tests.yml)
+
 A desktop tool for fitting learning curves to historical production lots and
 projecting unit costs for future buys. You type your lots into a window, click
 Run, and get an Excel workbook back with the fit statistics, the lot-by-lot
@@ -33,7 +35,7 @@ quietly handing you a garbage coefficient.
 
 ## Requirements
 
-Python 3.9 or newer, plus:
+Python 3.10 or newer, plus:
 
 ```
 pip install numpy pandas openpyxl
@@ -93,8 +95,9 @@ before the rate models will even be attempted.
 | `Fit_Chart_Data` | How each model did against the historical lots, with residuals, and three scatter charts |
 | `Risk_Summary` | Fitted parameters, the buy total with its interval, the simulated percentiles, and the assumptions behind them |
 | `Risk_Intervals` | Row per forecast lot with low and high bounds, and a chart of the band |
+| `Risk_SCurve` | The simulated buy total at every percentile, with the S-curve charted and P50 and P80 marked |
 
-The last two appear only when `cost_core` is installed and the risk analysis
+The last three appear only when `cost_core` is installed and the risk analysis
 ran.
 
 ![Results tab](docs/screenshot-results.png)
@@ -133,6 +136,18 @@ shifts every later lot along the curve. This tool holds them, so the bridge
 fits against explicit unit ranges instead of handing over a lot series. Those
 units stay where they belong.
 
+### The S-curve
+
+Five percentiles in a table is a thin way to show a distribution, so the whole
+thing gets charted. Cost runs along the bottom and cumulative probability up
+the side, which is the orientation you read a P80 off. P50 and P80 are marked
+and labelled with their cost.
+
+![Cost S-curve](docs/scurve.png)
+
+Read it as: pick a number on the bottom axis, and the curve tells you the
+chance the buy comes in at or below it.
+
 ### What it does not cover
 
 Schedule risk, requirement changes, and rate changes the history never saw.
@@ -147,6 +162,31 @@ different program. Whether the slope carries across is a judgement about
 product, process, rate and contractor. Nothing in the data can confirm it, and
 the extra error it introduces is in none of the intervals. The tab says so on
 every run.
+
+## Tests
+
+```
+pip install -r requirements-dev.txt
+pytest
+```
+
+71 tests with `cost_core` installed, 35 without (the risk ones skip). CI runs
+both, because "works when the optional dependency is missing" is a claim worth
+checking rather than asserting.
+
+A few of them exist for a specific reason. The bridge redirects a private
+`cost_core` hook so a buy can be priced from unit 1, and if a future release
+changed that hook the simulation would quietly price the wrong lots. So the
+bridge verifies the redirect took effect and refuses to report a simulation it
+cannot pin, and the suite has a test that fakes the hook disappearing to prove
+the refusal fires.
+
+Others read chart features back out of the workbook XML. openpyxl raises
+nothing when you assign to an attribute a class does not have, so a chart can
+come out perfectly valid with the data labels silently missing, which is
+exactly what shipped for a while. Those assertions parse the XML rather than
+matching strings, since openpyxl serialises differently depending on whether
+lxml happens to be installed.
 
 ## About the example data
 

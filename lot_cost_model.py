@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 import openpyxl
 from openpyxl.chart import Reference, ScatterChart, Series
@@ -1465,6 +1467,15 @@ def generate_fit_chart_data(
 _COL_CM = 1.72
 
 
+def _money_short(value: float) -> str:
+    """Compact money for a chart label: $250.0M rather than 250,000,000."""
+    v = float(value)
+    for cut, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(v) >= cut:
+            return f"${v / cut:,.1f}{suffix}"
+    return f"${v:,.0f}"
+
+
 def _chart_anchor(index: int, width_cm: float, start_col: int = 2,
                   row: int = 10) -> str:
     """Anchor cell for the nth chart in a left-to-right row of charts."""
@@ -1530,11 +1541,12 @@ def save_complete_excel_workbook(
     chart_df: pd.DataFrame,
     risk_summary_df: pd.DataFrame | None = None,
     risk_intervals_df: pd.DataFrame | None = None,
+    risk_scurve_df: pd.DataFrame | None = None,
 ):
     """Write the tables and embed native Excel scatter plots.
 
-    The two risk frames are optional: they are present only when cost_core is
-    installed and the risk analysis ran.
+    The three risk frames are optional: they are present only when cost_core
+    is installed and the risk analysis ran.
     """
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
         summary_df.to_excel(
@@ -1555,6 +1567,10 @@ def save_complete_excel_workbook(
         if risk_intervals_df is not None:
             risk_intervals_df.to_excel(
                 writer, sheet_name="Risk_Intervals", index=False
+            )
+        if risk_scurve_df is not None:
+            risk_scurve_df.to_excel(
+                writer, sheet_name="Risk_SCurve", index=False
             )
 
     wb = openpyxl.load_workbook(filename)
@@ -1716,6 +1732,108 @@ def save_complete_excel_workbook(
                 s.graphicalProperties.line.dashStyle = "dash"
             band.series.append(s)
         wsr.add_chart(band, "M2")
+
+    # Chart 5: the S-curve. Cost on the x axis, cumulative probability on the
+    # y axis, which is the orientation everyone reads a P80 off.
+    if risk_scurve_df is not None and len(risk_scurve_df):
+        wss = wb["Risk_SCurve"]
+        last_s = len(risk_scurve_df) + 1
+        for row in range(2, last_s + 1):
+            wss.cell(row=row, column=1).number_format = "0%"
+            wss.cell(row=row, column=2).number_format = "#,##0"
+
+        curve = ScatterChart()
+        _format_chart(
+            curve,
+            "Cost S-Curve: Probability the Buy Comes In At or Below",
+            "Buy Total ($)",
+            "Cumulative Probability",
+            20,
+            11,
+        )
+        curve.y_axis.numFmt = "0%"
+        # Whole dollars would give an axis of unreadable 9-digit labels that
+        # collide; each comma is a division by a thousand in an Excel format.
+        # The decimal place appears only for a narrow spread, where rounding
+        # to whole units would print the same label several times over.
+        lo_x = float(risk_scurve_df["Buy Total ($)"].min())
+        hi_x = float(risk_scurve_df["Buy Total ($)"].max())
+        span = hi_x - lo_x
+        if hi_x >= 1e9:
+            curve.x_axis.numFmt = (
+                '#,##0.0,,,"B"' if span < 1e10 else '#,##0,,,"B"'
+            )
+        elif hi_x >= 1e6:
+            curve.x_axis.numFmt = (
+                '#,##0.0,,"M"' if span < 1e7 else '#,##0,,"M"'
+            )
+        elif hi_x >= 1e3:
+            curve.x_axis.numFmt = '#,##0,"K"'
+        else:
+            curve.x_axis.numFmt = "#,##0"
+        # One series needs no legend, and Excel renders a huge one here.
+        curve.legend = None
+        # Probability is bounded, and Excel otherwise draws an axis to 120%.
+        curve.y_axis.scaling.min = 0
+        curve.y_axis.scaling.max = 1
+        # Zoom to where the distribution actually sits, rather than showing
+        # 500M of empty space because Excel starts every axis at zero.
+        pad = max(span * 0.15, 1.0)
+        curve.x_axis.scaling.min = max(0.0, lo_x - pad)
+        curve.x_axis.scaling.max = hi_x + pad
+        s = Series(
+            values=Reference(wss, min_col=1, min_row=1, max_row=last_s),
+            xvalues=Reference(wss, min_col=2, min_row=2, max_row=last_s),
+            title_from_data=True,
+        )
+        s.marker.symbol = "none"
+        s.smooth = True
+        curve.series.append(s)
+
+        # Call out P50 and P80. openpyxl cannot put arbitrary text in a data
+        # label, but it can print the series name, so each marker is its own
+        # one-point series whose name carries both the percentile and its
+        # cost -- the cost is the x value, and a scatter label can only show
+        # the y value, so the name is the one place both fit.
+        pct = risk_scurve_df["Percentile"].round(4)
+        marks = [("P50", 0.50), ("P80", 0.80)]
+        for i, (name, level) in enumerate(marks):
+            hit = risk_scurve_df.loc[pct == round(level, 4), "Buy Total ($)"]
+            if hit.empty:
+                continue
+            cost = float(hit.iloc[0])
+            y_col = 4 + i * 2  # D, then F
+            x_col = y_col + 1  # E, then G
+            wss.cell(row=1, column=y_col, value=f"{name}  {_money_short(cost)}")
+            wss.cell(row=2, column=y_col, value=level).number_format = "0%"
+            wss.cell(row=1, column=x_col, value=f"{name} cost")
+            wss.cell(
+                row=2, column=x_col, value=cost
+            ).number_format = "#,##0"
+
+            mark = Series(
+                values=Reference(wss, min_col=y_col, min_row=1, max_row=2),
+                xvalues=Reference(wss, min_col=x_col, min_row=2, max_row=2),
+                title_from_data=True,
+            )
+            mark.marker.symbol = "circle"
+            mark.marker.size = 9
+            mark.graphicalProperties.line.noFill = True
+            tag = DataLabelList()
+            tag.showSerName = True
+            tag.showVal = False
+            tag.showCatName = False
+            tag.showLegendKey = False
+            tag.showPercent = False
+            tag.showBubbleSize = False
+            # Left of the marker. The curve only ever rises, so everything up
+            # and to the left of a point on it is empty space; below or to
+            # the right the curve climbs straight through the text.
+            tag.dLblPos = "l"
+            mark.dLbls = tag
+            curve.series.append(mark)
+
+        wss.add_chart(curve, "I2")
 
     wb.save(filename)
 
@@ -2541,13 +2659,20 @@ class LotCostApp(tk.Tk):
         }
 
     def _save_workbook(
-        self, path, proj, summ, chart, risk_summ=None, risk_iv=None
+        self,
+        path,
+        proj,
+        summ,
+        chart,
+        risk_summ=None,
+        risk_iv=None,
+        risk_sc=None,
     ) -> str | None:
         """Save, re-prompting if the path is locked or not writable."""
         while True:
             try:
                 save_complete_excel_workbook(
-                    path, proj, summ, chart, risk_summ, risk_iv
+                    path, proj, summ, chart, risk_summ, risk_iv, risk_sc
                 )
                 return path
             except PermissionError:
@@ -2598,7 +2723,7 @@ class LotCostApp(tk.Tk):
             summary_df = generate_analyst_summary(models_ctx, run_info)
             chart_df = generate_fit_chart_data(models_ctx)
 
-            risk_summary = risk_intervals = None
+            risk_summary = risk_intervals = risk_scurve = None
             if (
                 risk is not None
                 and risk.AVAILABLE
@@ -2609,6 +2734,7 @@ class LotCostApp(tk.Tk):
                     self._show_risk(self.risk_result)
                     risk_summary = risk.summary_frame(self.risk_result)
                     risk_intervals = self.risk_result.intervals
+                    risk_scurve = self.risk_result.scurve
                     self.var_risk_status.set(
                         f"Ran {self.risk_result.n_iter:,} iterations."
                     )
@@ -2632,6 +2758,7 @@ class LotCostApp(tk.Tk):
                 chart_df,
                 risk_summary,
                 risk_intervals,
+                risk_scurve,
             )
 
             self._show_results(summary_df)
