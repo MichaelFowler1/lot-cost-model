@@ -1,0 +1,17 @@
+# Model output. Never commit real program data.
+*.xlsx
+*.xls
+*.csv
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
