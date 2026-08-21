@@ -223,10 +223,19 @@ class TestSCurveSheet:
         assert M._money_short(45_200) == "$45.2K"
         assert M._money_short(870) == "$870"
 
-    def test_marker_labels_show_the_series_name(self, risk_book):
+    def test_markers_are_named_in_the_legend_not_beside_the_curve(
+        self, risk_book
+    ):
+        # Excel can only put a data label immediately next to its point, and
+        # the curve runs through the point, so a label there gets the line
+        # drawn across it. The legend is the one place nothing can overlap.
         xml = [x for x in chart_xml(risk_book) if "S-Curve" in x]
         assert xml, "no S-curve chart found"
-        assert flag(xml[0], "showSerName", within="dLbls") == ["1", "1"]
+        assert not elements(xml[0], "dLbls"), (
+            "S-curve markers should be named in the legend, not by data labels"
+        )
+        assert elements(xml[0], "legend"), "S-curve needs its legend"
+        assert "b" in flag(xml[0], "legendPos")
 
     def test_curve_and_two_markers(self, risk_book):
         xml = [x for x in chart_xml(risk_book) if "S-Curve" in x][0]

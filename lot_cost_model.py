@@ -5,6 +5,7 @@ import openpyxl
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.series import SeriesLabel
 from openpyxl.chart.text import RichText
 from openpyxl.drawing.text import (
     CharacterProperties,
@@ -1794,8 +1795,14 @@ def save_complete_excel_workbook(
             curve.x_axis.numFmt = '#,##0,"K"'
         else:
             curve.x_axis.numFmt = "#,##0"
-        # One series needs no legend, and Excel renders a huge one here.
-        curve.legend = None
+        # The P50 and P80 markers are named in the legend rather than by data
+        # labels beside them. Excel can only place a label immediately next to
+        # its point, and the curve runs through the point, so on a steep
+        # S-curve every available position puts the line through the text.
+        # The legend sits below the plot where nothing can overlap it.
+        if curve.legend is not None:
+            curve.legend.position = "b"
+            curve.legend.overlay = False
         # Probability is bounded, and Excel otherwise draws an axis to 120%.
         curve.y_axis.scaling.min = 0
         curve.y_axis.scaling.max = 1
@@ -1811,13 +1818,12 @@ def save_complete_excel_workbook(
         )
         s.marker.symbol = "none"
         s.smooth = True
+        s.tx = SeriesLabel(v="Buy total distribution")
         curve.series.append(s)
 
-        # Call out P50 and P80. openpyxl cannot put arbitrary text in a data
-        # label, but it can print the series name, so each marker is its own
-        # one-point series whose name carries both the percentile and its
-        # cost -- the cost is the x value, and a scatter label can only show
-        # the y value, so the name is the one place both fit.
+        # Call out P50 and P80. Each is its own one-point series, named for
+        # the percentile and its cost, so the legend carries both while the
+        # marker shows where it falls on the curve.
         pct = risk_scurve_df["Percentile"].round(4)
         marks = [("P50", 0.50), ("P80", 0.80)]
         for i, (name, level) in enumerate(marks):
@@ -1842,18 +1848,6 @@ def save_complete_excel_workbook(
             mark.marker.symbol = "circle"
             mark.marker.size = 9
             mark.graphicalProperties.line.noFill = True
-            tag = DataLabelList()
-            tag.showSerName = True
-            tag.showVal = False
-            tag.showCatName = False
-            tag.showLegendKey = False
-            tag.showPercent = False
-            tag.showBubbleSize = False
-            # Left of the marker. The curve only ever rises, so everything up
-            # and to the left of a point on it is empty space; below or to
-            # the right the curve climbs straight through the text.
-            tag.dLblPos = "l"
-            mark.dLbls = tag
             curve.series.append(mark)
 
         wss.add_chart(curve, "I2")
