@@ -1707,31 +1707,54 @@ def save_complete_excel_workbook(
     if risk_intervals_df is not None and len(risk_intervals_df):
         wsr = wb["Risk_Intervals"]
         last_r = len(risk_intervals_df) + 1
+
+        # Find the columns by header rather than by position. cost_core owns
+        # the shape of this frame, and it has changed once already.
+        headers = {
+            str(c.value): c.column
+            for c in next(wsr.iter_rows(min_row=1, max_row=1))
+        }
+        x_name = next(
+            (n for n in ("Last Unit in Lot", "Fiscal Year", "Lot Quantity")
+             if n in headers),
+            None,
+        )
+        y_names = [
+            n for n in ("Unit Cost ($K)", "Unit Cost Lower", "Unit Cost Upper")
+            if n in headers
+        ]
+        if x_name is None or len(y_names) < 2:
+            wb.save(filename)
+            return
+
         band = ScatterChart()
         _format_chart(
             band,
             "Forecast Unit Cost with Prediction Interval",
-            "Last Unit in Lot",
+            x_name,
             "Unit Cost ($K)",
             20,
             11,
         )
 
-        xs = Reference(wsr, min_col=4, min_row=2, max_row=last_r)
-        for col, dashed in ((6, False), (7, True), (8, True)):
+        xs = Reference(
+            wsr, min_col=headers[x_name], min_row=2, max_row=last_r
+        )
+        for name in y_names:
+            dashed = name != "Unit Cost ($K)"
             s = Series(
                 values=Reference(
-                    wsr, min_col=col, min_row=1, max_row=last_r
+                    wsr, min_col=headers[name], min_row=1, max_row=last_r
                 ),
                 xvalues=xs,
                 title_from_data=True,
             )
-            s.marker.symbol = "circle" if not dashed else "none"
+            s.marker.symbol = "none" if dashed else "circle"
             s.smooth = False
             if dashed:
                 s.graphicalProperties.line.dashStyle = "dash"
             band.series.append(s)
-        wsr.add_chart(band, "M2")
+        wsr.add_chart(band, "P2")
 
     # Chart 5: the S-curve. Cost on the x axis, cumulative probability on the
     # y axis, which is the orientation everyone reads a P80 off.
@@ -2284,10 +2307,10 @@ class LotCostApp(tk.Tk):
             f,
             text=(
                 "Prediction intervals and a Monte Carlo of the whole buy, "
-                "fitted by cost_core from the\ncost-risk-toolkit. It fits the "
-                "exact lot average rather than the lot midpoint, so its "
-                "parameters\nwill sit close to the LC model on tab 4 without "
-                "matching it exactly. A wide gap is worth investigating."
+                "from cost_core in the cost-risk-toolkit.\nNothing is refitted: "
+                "these put a distribution around the model already selected on "
+                "tab 4, so the\npoint estimate underneath is the same buy total "
+                "the projections sheet reports."
             ),
             style="Sub.TLabel",
             justify="left",
@@ -2296,14 +2319,10 @@ class LotCostApp(tk.Tk):
         ctl = ttk.LabelFrame(f, text="Settings")
         ctl.pack(fill="x", padx=8, pady=4)
 
-        self.var_theory = tk.StringVar(value="crawford")
-        self.var_method = tk.StringVar(value="ols")
         self.var_level = tk.StringVar(value="80")
         self.var_iters = tk.StringVar(value="20000")
         self.var_seed = tk.StringVar(value="11")
         self.var_rho = tk.StringVar(value="0.30")
-        self.var_basis = tk.StringVar(value="recurring")
-        self.var_resid = tk.BooleanVar(value=True)
         self.var_do_risk = tk.BooleanVar(value=True)
 
         def combo(row, col, label, var, values, width=12):
@@ -2325,23 +2344,20 @@ class LotCostApp(tk.Tk):
                 row=row, column=col * 2 + 1, sticky="w", pady=4
             )
 
-        combo(0, 0, "Theory", self.var_theory, list(risk.THEORIES))
-        combo(0, 1, "Method", self.var_method, list(risk.METHODS))
-        combo(0, 2, "Interval %", self.var_level, ["80", "90", "95"], 8)
-        entry(1, 0, "Iterations", self.var_iters)
-        entry(1, 1, "Seed", self.var_seed)
-        entry(1, 2, "Lot correlation", self.var_rho, 8)
-        combo(2, 0, "Cost basis", self.var_basis, ["recurring", "total"])
-        ttk.Checkbutton(
+        combo(0, 0, "Interval %", self.var_level, ["80", "90", "95"], 8)
+        entry(0, 1, "Iterations", self.var_iters)
+        entry(0, 2, "Seed", self.var_seed)
+        entry(1, 0, "Lot correlation", self.var_rho, 8)
+        ttk.Label(
             ctl,
-            text="Include lot-to-lot scatter (prediction, not confidence)",
-            variable=self.var_resid,
-        ).grid(row=2, column=2, columnspan=4, sticky="w", padx=8)
+            text="how much consecutive lots move together",
+            style="Sub.TLabel",
+        ).grid(row=1, column=2, columnspan=4, sticky="w", padx=8)
         ttk.Checkbutton(
             ctl,
             text="Run this automatically with Run Model and add it to the workbook",
             variable=self.var_do_risk,
-        ).grid(row=3, column=0, columnspan=6, sticky="w", padx=8, pady=(2, 6))
+        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(2, 6))
 
         bar = ttk.Frame(f)
         bar.pack(fill="x", padx=8, pady=(2, 6))
@@ -2375,13 +2391,14 @@ class LotCostApp(tk.Tk):
 
         bot = ttk.Frame(panes)
         iv_cols = (
-            "Lot", "Qty", "First", "Last", "CF",
-            "Unit Cost ($K)", "Low", "High", "Lot Cost ($)",
+            "Lot", "Qty", "FY",
+            "Unit Cost ($K)", "Unit Low", "Unit High",
+            "Lot Cost ($)", "Lot Low", "Lot High",
         )
         self.tree_iv = ttk.Treeview(
             bot, columns=iv_cols, show="headings", height=8
         )
-        for c, w in zip(iv_cols, (45, 45, 55, 55, 50, 110, 95, 95, 130)):
+        for c, w in zip(iv_cols, (45, 45, 55, 105, 95, 95, 125, 115, 115)):
             self.tree_iv.heading(c, text=c)
             self.tree_iv.column(c, width=w, anchor="e")
         sv2 = ttk.Scrollbar(bot, orient="vertical", command=self.tree_iv.yview)
@@ -2397,55 +2414,39 @@ class LotCostApp(tk.Tk):
             except ValueError:
                 raise ValueError(f"Risk setting '{label}' must be a number.")
 
-        year_txt = self.var_baseyear.get().strip()
-        year = None
-        if year_txt:
-            try:
-                year = int(float(year_txt))
-            except ValueError:
-                raise ValueError(
-                    f"Base year '{year_txt}' is not a year. Set it on tab 3."
-                )
-
         return risk.RiskOptions(
-            theory=self.var_theory.get(),
-            method=self.var_method.get(),
             level=num(self.var_level, "Interval %", float) / 100.0,
             n_iter=num(self.var_iters, "Iterations", int),
             seed=num(self.var_seed, "Seed", int),
-            residual_correlation=num(self.var_rho, "Lot correlation", float),
-            include_residual=bool(self.var_resid.get()),
-            cost_basis=self.var_basis.get(),
-            dollar_year=year,
-            program=self.var_program.get().strip() or "unnamed program",
+            lot_correlation=num(self.var_rho, "Lot correlation", float),
             simulate=True,
         )
 
-    def _compute_risk(self):
-        """Collect the grids and run the risk analysis. Returns a RiskResult."""
-        analogy_df = self._collect_analogy()
-        estimate_df = self._collect_estimate()
-        cfg = SETTINGS.copy()
-        cfg.update(self._collect_overrides())
+    def _compute_risk(self, ctx=None, projections=None, summary=None):
+        """Put intervals and a simulated total around a fitted run.
 
-        cf_raw = estimate_df["Complexity"].to_numpy(dtype=float)
-        last = cfg["DefaultCF"]
-        cf = []
-        for v in cf_raw:
-            if pd.isna(v) or v <= 0:
-                cf.append(last)
-            else:
-                last = float(v)
-                cf.append(last)
+        Given nothing, it fits from the grids first. Run Model passes in what
+        it already computed so the model is not fitted twice.
+        """
+        if ctx is None or projections is None or summary is None:
+            analogy_df = self._collect_analogy()
+            estimate_df = self._collect_estimate()
+            projections, ctx = run_lot_cost_model(
+                analogy_df, estimate_df, self._collect_overrides()
+            )
+            summary = generate_analyst_summary(ctx, self._run_info())
 
-        return risk.run_risk(
-            analogy_df["Qty"].to_numpy(dtype=float),
-            analogy_df["AUC ($K)"].to_numpy(dtype=float),
-            estimate_df["Qty"].to_numpy(dtype=int),
-            cf,
-            cfg,
-            self._risk_options(),
-        )
+        return risk.run_risk(ctx, projections, summary, self._risk_options())
+
+    def _run_info(self) -> dict:
+        return {
+            "RunID": self.var_runid.get().strip() or SETTINGS["DefaultRunID"],
+            "Program": self.var_program.get().strip()
+            or SETTINGS["DefaultProgram"],
+            "RunLabel": self.var_label.get().strip()
+            or SETTINGS["DefaultRunLabel"],
+            "BaseYear": self.var_baseyear.get().strip(),
+        }
 
     def run_risk(self):
         if risk is None or not risk.AVAILABLE:
@@ -2480,20 +2481,32 @@ class LotCostApp(tk.Tk):
                 "", "end", values=(str(row["Item"]), str(row["Value"]))
             )
         self.tree_iv.delete(*self.tree_iv.get_children())
+
+        def cell(row, name, fmt="{:,.2f}"):
+            # Lot and Fiscal Year come through as text, so anything that is
+            # not a number is shown as it stands rather than formatted.
+            if name not in row.index or pd.isna(row[name]):
+                return ""
+            value = row[name]
+            try:
+                return fmt.format(float(value))
+            except (TypeError, ValueError):
+                return str(value)
+
         for _, r in res.intervals.iterrows():
             self.tree_iv.insert(
                 "",
                 "end",
                 values=(
-                    int(r["Lot"]),
-                    int(r["Lot Quantity"]),
-                    int(r["First Unit in Lot"]),
-                    int(r["Last Unit in Lot"]),
-                    f"{r['Complexity Factor']:.4g}",
-                    f"{r['Unit Cost ($K)']:,.2f}",
-                    f"{r['Unit Cost Low ($K)']:,.2f}",
-                    f"{r['Unit Cost High ($K)']:,.2f}",
-                    f"{r['Lot Cost ($)']:,.2f}",
+                    cell(r, "Lot", "{:.0f}"),
+                    cell(r, "Lot Quantity", "{:.0f}"),
+                    cell(r, "Fiscal Year", "{:.0f}"),
+                    cell(r, "Unit Cost ($K)"),
+                    cell(r, "Unit Cost Lower"),
+                    cell(r, "Unit Cost Upper"),
+                    cell(r, "Lot Cost ($)"),
+                    cell(r, "Lot Cost Lower"),
+                    cell(r, "Lot Cost Upper"),
                 ),
             )
 
@@ -2707,15 +2720,7 @@ class LotCostApp(tk.Tk):
             estimate_df = self._collect_estimate()
             overrides = self._collect_overrides()
 
-            run_info = {
-                "RunID": self.var_runid.get().strip()
-                or SETTINGS["DefaultRunID"],
-                "Program": self.var_program.get().strip()
-                or SETTINGS["DefaultProgram"],
-                "RunLabel": self.var_label.get().strip()
-                or SETTINGS["DefaultRunLabel"],
-                "BaseYear": self.var_baseyear.get().strip(),
-            }
+            run_info = self._run_info()
 
             projections_df, models_ctx = run_lot_cost_model(
                 analogy_df, estimate_df, overrides
@@ -2730,7 +2735,9 @@ class LotCostApp(tk.Tk):
                 and bool(self.var_do_risk.get())
             ):
                 try:
-                    self.risk_result = self._compute_risk()
+                    self.risk_result = self._compute_risk(
+                        models_ctx, projections_df, summary_df
+                    )
                     self._show_risk(self.risk_result)
                     risk_summary = risk.summary_frame(self.risk_result)
                     risk_intervals = self.risk_result.intervals

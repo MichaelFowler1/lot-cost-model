@@ -1,9 +1,10 @@
-"""The cost_core bridge: intervals, simulation, and the guards around both.
+"""The cost_core bridge: intervals and the simulated buy total.
 
-The tests that matter most here are the ones in TestSpanContract. The bridge
-redirects a private cost_core hook so a buy can be priced from unit 1, and a
-silent change in that hook would mean simulating the wrong lots and reporting
-confident numbers for them.
+The bridge hands cost_core the objects run_lot_cost_model already produced,
+so these tests care mostly about one thing: the risk numbers must describe
+the same lots, the same selected model and the same point estimate as the
+projections sheet. If they ever drift apart, the tool is reporting a
+distribution around a number it is not showing anyone.
 """
 
 from __future__ import annotations
@@ -11,128 +12,81 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import lot_cost_model as M
 import risk as R
 
 pytestmark = pytest.mark.skipif(
     not R.AVAILABLE, reason=f"cost_core not installed: {R.IMPORT_ERROR}"
 )
 
-FCST_QTY = [8, 16, 16, 16, 12, 6]
-CF = [1.15] * 6
-
 
 def options(**kw):
-    base = dict(dollar_year=2025, program="TEST", n_iter=4000, seed=11)
+    base = dict(n_iter=4000, seed=11)
     base.update(kw)
     return R.RiskOptions(**base)
 
 
 @pytest.fixture(scope="module")
-def result(cfg):
-    qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-    auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-    return R.run_risk(qty, auc, FCST_QTY, CF, cfg, options(n_iter=20000))
+def fitted(analogy_df, estimate_df):
+    proj, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
+    summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
+    return ctx, proj, summary
 
 
-class TestSpans:
-    def test_matches_the_main_module_unit_tracking(self):
-        import lot_cost_model as M
-
-        spans = R.unit_spans([9, 21, 22], 0)
-        tracked = M.track_units(np.array([9, 21, 22]), 0)
-        assert spans.tolist() == [[d["S"], d["E"]] for d in tracked]
-
-    def test_prior_units_shift_the_series(self):
-        assert R.unit_spans([5, 5], 100).tolist() == [[101, 105], [106, 110]]
+@pytest.fixture(scope="module")
+def result(fitted):
+    ctx, proj, summary = fitted
+    return R.run_risk(ctx, proj, summary, options(n_iter=20000))
 
 
-class TestSpanContract:
-    """cost_core's private span hook is load-bearing. Pin it."""
+class TestAgreementWithTheModel:
+    """The whole point of enriching rather than refitting."""
 
-    def test_hook_still_exists_on_the_report(self):
-        from cost_core.lots import LotFitReport
+    def test_uses_the_model_the_tool_selected(self, fitted, result):
+        _, _, summary = fitted
+        selected = summary.loc[summary["Item"] == "SELECTED"]
+        picked = [c for c in ("LC", "Rate", "LC+Rate")
+                  if selected.iloc[0][c] == "YES"]
+        assert result.model == picked[0]
 
-        assert hasattr(LotFitReport, R.SPAN_HOOK), (
-            f"cost_core no longer defines {R.SPAN_HOOK}; the Monte Carlo "
-            "can no longer be pinned to our lot positions."
+    def test_point_estimate_matches_the_projections_sheet(self, fitted, result):
+        _, proj, _ = fitted
+        col = f"{result.model} Lot Cost After Complexity ($)"
+        assert result.total_point == pytest.approx(
+            proj[col].sum(), rel=1e-6
         )
 
-    def test_our_spans_reproduce_cost_cores_own_continuation(self, cfg):
-        # When the forecast continues from the last unit built, cost_core
-        # would derive exactly the spans we hand it. If this drifts, our
-        # redirect is changing the answer rather than just relocating it.
-        from cost_core.learning_curve import fit_curve
-        from cost_core.lots import LotFitReport, LotSeries
+    def test_one_interval_row_per_forecast_lot(self, fitted, result):
+        _, proj, _ = fitted
+        assert len(result.intervals) == len(proj)
 
-        qty = np.array([10, 20, 25, 25, 15, 15], dtype=float)
-        auc = np.array([800.61, 639.49, 563.66, 520.05, 502.98, 487.08])
-        ranges = R.unit_spans(qty, 0)
-        fit = fit_curve(
-            theory="crawford", method="ols", lots=ranges, lot_costs=auc * qty
-        )
-        series = LotSeries(
-            quantities=qty,
-            costs=auc * qty,
-            cost_basis="recurring",
-            first_unit=1,
-            dollar_year=2025,
-        )
-        report = LotFitReport(series=series, fit=fit)
-
-        theirs = np.asarray(getattr(report, R.SPAN_HOOK)(FCST_QTY))
-        ours = R.unit_spans(FCST_QTY, int(qty.sum()))
-        assert theirs.tolist() == ours.tolist()
-
-    def test_simulation_is_refused_if_the_hook_disappears(
-        self, cfg, monkeypatch
-    ):
-        # Simulate a future cost_core that renamed the hook. The bridge must
-        # refuse rather than silently simulate its own choice of lots.
-        monkeypatch.setattr(R, "SPAN_HOOK", "_hook_that_does_not_exist")
-        with pytest.raises(RuntimeError, match="could not be pinned"):
-            R.run_risk(
-                [10.0, 20.0, 25.0, 25.0, 15.0, 15.0],
-                [800.61, 639.49, 563.66, 520.05, 502.98, 487.08],
-                FCST_QTY,
-                CF,
-                cfg,
-                options(),
-            )
-
-    def test_redirect_records_being_called(self):
-        spans = R.unit_spans([4, 4], 0)
-        redirect = R._SpanRedirect(spans)
-        assert redirect.calls == 0
-        assert redirect([4, 4]) is spans
-        assert redirect.calls == 1
+    def test_simulation_centres_on_the_point_estimate(self, result):
+        assert 35 < result.point_percentile < 65
 
 
 class TestIntervals:
     def test_interval_brackets_the_point_estimate(self, result):
         iv = result.intervals
-        assert (iv["Unit Cost Low ($K)"] <= iv["Unit Cost ($K)"]).all()
-        assert (iv["Unit Cost ($K)"] <= iv["Unit Cost High ($K)"]).all()
-
-    def test_one_row_per_forecast_lot(self, result):
-        assert len(result.intervals) == len(FCST_QTY)
+        assert (iv["Unit Cost Lower"] <= iv["Unit Cost ($K)"]).all()
+        assert (iv["Unit Cost ($K)"] <= iv["Unit Cost Upper"]).all()
 
     def test_total_is_the_sum_of_the_lots(self, result):
         assert result.total_point == pytest.approx(
             result.intervals["Lot Cost ($)"].sum(), rel=1e-9
         )
+        assert result.total_lower < result.total_point < result.total_upper
 
     def test_unit_cost_falls_across_the_buy(self, result):
         costs = result.intervals["Unit Cost ($K)"].to_numpy()
         assert np.all(np.diff(costs) < 0)
 
-    def test_a_wider_level_gives_a_wider_interval(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
+    def test_a_wider_level_gives_a_wider_interval(self, fitted):
+        ctx, proj, summary = fitted
         narrow = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(level=0.50, simulate=False)
+            ctx, proj, summary, options(level=0.50, simulate=False)
         )
         wide = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(level=0.95, simulate=False)
+            ctx, proj, summary, options(level=0.95, simulate=False)
         )
         assert (wide.total_upper - wide.total_lower) > (
             narrow.total_upper - narrow.total_lower
@@ -143,34 +97,29 @@ class TestSimulation:
     def test_percentiles_are_ordered(self, result):
         assert result.p50 < result.p80 < result.p90
 
-    def test_point_estimate_lands_near_the_middle(self, result):
-        # The point estimate is the median of a roughly symmetric draw.
-        assert 35 < result.point_percentile < 65
+    def test_reserve_to_p80_is_the_gap_above_the_point(self, result):
+        assert result.reserve_to_p80 == pytest.approx(
+            result.p80 - result.total_point, rel=1e-6
+        )
 
-    def test_same_seed_reproduces_the_answer(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        a = R.run_risk(qty, auc, FCST_QTY, CF, cfg, options())
-        b = R.run_risk(qty, auc, FCST_QTY, CF, cfg, options())
+    def test_same_seed_reproduces_the_answer(self, fitted):
+        ctx, proj, summary = fitted
+        a = R.run_risk(ctx, proj, summary, options())
+        b = R.run_risk(ctx, proj, summary, options())
         assert a.p80 == b.p80
 
-    def test_a_different_seed_moves_the_answer(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        a = R.run_risk(qty, auc, FCST_QTY, CF, cfg, options(seed=1))
-        b = R.run_risk(qty, auc, FCST_QTY, CF, cfg, options(seed=2))
+    def test_a_different_seed_moves_the_answer(self, fitted):
+        ctx, proj, summary = fitted
+        a = R.run_risk(ctx, proj, summary, options(seed=1))
+        b = R.run_risk(ctx, proj, summary, options(seed=2))
         assert a.p80 != b.p80
 
-    def test_dropping_residual_scatter_narrows_the_spread(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        with_scatter = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(include_residual=True)
-        )
-        without = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(include_residual=False)
-        )
-        assert without.sim_cv < with_scatter.sim_cv
+    def test_more_correlation_widens_the_buy(self, fitted):
+        # Consecutive lots moving together stops the shocks cancelling.
+        ctx, proj, summary = fitted
+        low = R.run_risk(ctx, proj, summary, options(lot_correlation=0.0))
+        high = R.run_risk(ctx, proj, summary, options(lot_correlation=0.9))
+        assert high.sim_cv > low.sim_cv
 
 
 class TestSCurve:
@@ -191,109 +140,77 @@ class TestSCurve:
 
 
 class TestComplexityFactor:
-    def test_scales_the_total_linearly(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        one = R.run_risk(
-            qty, auc, FCST_QTY, [1.0] * 6, cfg, options(simulate=False)
-        )
-        two = R.run_risk(
-            qty, auc, FCST_QTY, [2.0] * 6, cfg, options(simulate=False)
-        )
-        assert two.total_point == pytest.approx(2 * one.total_point, rel=1e-9)
+    def test_is_already_in_the_intervals(self, analogy_df, estimate_df):
+        # The projections carry complexity, so the intervals inherit it and
+        # doubling the factor doubles the whole distribution.
+        doubled = estimate_df.copy()
+        doubled["Complexity"] = estimate_df["Complexity"] * 2
 
-    def test_a_blank_factor_is_treated_as_one(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        blank = R.run_risk(
-            qty, auc, FCST_QTY, [np.nan] * 6, cfg, options(simulate=False)
-        )
-        ones = R.run_risk(
-            qty, auc, FCST_QTY, [1.0] * 6, cfg, options(simulate=False)
-        )
-        assert blank.total_point == pytest.approx(ones.total_point)
+        def total(est):
+            proj, ctx = M.run_lot_cost_model(analogy_df, est)
+            summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
+            return R.run_risk(
+                ctx, proj, summary, options(simulate=False)
+            ).total_point
+
+        assert total(doubled) == pytest.approx(2 * total(estimate_df), rel=1e-6)
 
 
 class TestQuantityOnlyLots:
-    def test_units_are_kept_in_the_cumulative_count(self, cfg):
-        # cost_core's own CSV path drops these rows, which would slide every
-        # later lot along the curve. Ours must not.
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, np.nan, 502.98, 487.08]
-        res = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(simulate=False)
-        )
+    def test_are_called_out_in_the_notes(self, analogy_df, estimate_df):
+        gapped = analogy_df.copy()
+        gapped.loc[3, "AUC ($K)"] = np.nan
+        proj, ctx = M.run_lot_cost_model(gapped, estimate_df)
+        summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
+        res = R.run_risk(ctx, proj, summary, options(simulate=False))
         assert res.n_obs == 5
         assert any("quantity-only" in n for n in res.notes)
 
 
-class TestGuards:
-    def test_base_year_is_required(self, cfg):
-        with pytest.raises(ValueError, match="base year"):
-            R.run_risk(
-                [10.0, 20.0, 25.0],
-                [800.0, 640.0, 560.0],
-                FCST_QTY,
-                CF,
-                cfg,
-                options(dollar_year=None),
-            )
-
-    def test_three_costed_lots_are_required(self, cfg):
-        with pytest.raises(ValueError, match="at least 3"):
-            R.run_risk(
-                [10.0, 20.0],
-                [800.0, 640.0],
-                FCST_QTY,
-                CF,
-                cfg,
-                options(),
-            )
-
-    def test_low_degrees_of_freedom_is_warned_about(self, cfg):
-        res = R.run_risk(
-            [10.0, 20.0, 25.0],
-            [800.0, 640.0, 560.0],
-            FCST_QTY,
-            CF,
-            cfg,
-            options(simulate=False),
-        )
-        assert res.df <= 2
-        assert any("degree" in w for w in res.warnings)
-
-
 class TestBasis:
-    def test_continuation_prices_later_units_than_unit_one(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        from_one = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(simulate=False)
-        )
-        cont = R.run_risk(
-            qty,
-            auc,
-            FCST_QTY,
-            CF,
-            dict(cfg, FcstPriorUnits=110),
-            options(simulate=False),
-        )
-        assert cont.intervals["First Unit in Lot"].iloc[0] == 111
-        assert cont.total_point < from_one.total_point
+    def test_continuation_is_cheaper_than_pricing_from_unit_one(
+        self, analogy_df, estimate_df
+    ):
+        def total(prior):
+            proj, ctx = M.run_lot_cost_model(
+                analogy_df, estimate_df, {"FcstPriorUnits": prior}
+            )
+            summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
+            return R.run_risk(
+                ctx, proj, summary, options(simulate=False)
+            ).total_point
+
+        assert total(110) < total(0)
 
     def test_the_analogy_caveat_is_stated_when_pricing_from_unit_one(
         self, result
     ):
         assert any("analogy" in n for n in result.notes)
 
+    def test_continuation_says_so_instead(self, analogy_df, estimate_df):
+        proj, ctx = M.run_lot_cost_model(
+            analogy_df, estimate_df, {"FcstPriorUnits": 110}
+        )
+        summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
+        res = R.run_risk(ctx, proj, summary, options(simulate=False))
+        assert any("continue from unit 111" in n for n in res.notes)
+
+
+class TestGuards:
+    def test_refuses_when_no_model_was_selected(self, fitted):
+        import pandas as pd
+
+        ctx, proj, _ = fitted
+        empty = pd.DataFrame({"Item": ["Program"], "Value": ["TEST"],
+                              "LC": [""], "Rate": [""], "LC+Rate": [""]})
+        with pytest.raises(RuntimeError, match="which model"):
+            R.run_risk(ctx, proj, empty, options(simulate=False))
+
 
 class TestSummaryFrame:
-    def test_renders_without_a_simulation(self, cfg):
-        qty = [10.0, 20.0, 25.0, 25.0, 15.0, 15.0]
-        auc = [800.61, 639.49, 563.66, 520.05, 502.98, 487.08]
-        res = R.run_risk(
-            qty, auc, FCST_QTY, CF, cfg, options(simulate=False)
-        )
+    def test_renders_without_a_simulation(self, fitted):
+        ctx, proj, summary = fitted
+        res = R.run_risk(ctx, proj, summary, options(simulate=False))
         frame = R.summary_frame(res)
         assert list(frame.columns) == ["Item", "Value"]
         assert (frame["Item"] == "T1 first unit cost ($K)").any()
@@ -301,3 +218,4 @@ class TestSummaryFrame:
     def test_includes_percentiles_after_a_simulation(self, result):
         frame = R.summary_frame(result)
         assert (frame["Item"] == "Simulated P80 ($)").any()
+        assert (frame["Item"] == "Reserve to P80 ($)").any()

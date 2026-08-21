@@ -120,21 +120,22 @@ where the line sits. Future lots are correlated at 0.30 by default because
 consecutive lots share a workforce and a schedule, and pretending otherwise
 lets the shocks cancel and understates the spread of the whole buy.
 
-Two things about the handoff are worth knowing.
+The handoff is deliberately thin. `cost_core` is not asked to fit anything of
+its own: `projection_intervals` and `simulate_buy` take the very objects
+`run_lot_cost_model` already returned, so the intervals and the distribution
+describe **this tool's own selected model**, on its own lot positions, with the
+complexity factors already applied.
 
-`cost_core` fits the **exact lot average**, in closed form under Wright and by
-summation under Crawford. This tool fits the **lot midpoint** approximation.
-Those are different estimators, so their parameters land close without
-matching. On the bundled example, the tool gets a T1 of $1,010.80 at an 89.71%
-slope and `cost_core` gets $1,012.60 at 89.68%, and the two buy totals differ
-by about 0.01%. That agreement is the useful part: if the two ever diverge by
-much, something about the data deserves a look before either number gets used.
+That matters for a reason worth stating plainly. The number under the
+distribution is the same number on the projections sheet, identical by
+construction rather than by luck, so the P80 cannot quietly belong to a
+slightly different estimate than the one being briefed. There is no separate
+theory or fitting method to choose here, because there is no separate fit.
 
-The other is quantity-only lots. `cost_core.lots` reads a CSV and drops any row
-missing a cost, which also drops those units from the cumulative count and
-shifts every later lot along the curve. This tool holds them, so the bridge
-fits against explicit unit ranges instead of handing over a lot series. Those
-units stay where they belong.
+The cost is that you lose an independent second opinion. An earlier version did
+refit through `cost_core` with a different estimator, which gave a genuine
+cross-check but meant two point estimates that had to be reconciled. Agreement
+by construction was the better trade.
 
 ### The S-curve
 
@@ -174,12 +175,16 @@ pytest
 both, because "works when the optional dependency is missing" is a claim worth
 checking rather than asserting.
 
-A few of them exist for a specific reason. The bridge redirects a private
-`cost_core` hook so a buy can be priced from unit 1, and if a future release
-changed that hook the simulation would quietly price the wrong lots. So the
-bridge verifies the redirect took effect and refuses to report a simulation it
-cannot pin, and the suite has a test that fakes the hook disappearing to prove
-the refusal fires.
+A few of them exist for a specific reason. The most important assert that the
+risk numbers describe the same thing the projections sheet does: the same
+selected model, one interval row per forecast lot, and a simulated
+distribution whose point estimate matches the sheet's buy total. If those ever
+drift apart the tool would be showing a distribution around a number it is not
+displaying, which is the failure worth catching early.
+
+That check earned its place. An earlier bridge reached into a private
+`cost_core` hook, and CI caught the toolkit removing it within minutes of the
+first run.
 
 Others read chart features back out of the workbook XML. openpyxl raises
 nothing when you assign to an attribute a class does not have, so a chart can

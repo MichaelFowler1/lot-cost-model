@@ -40,18 +40,14 @@ def risk_book(tmp_path_factory, analogy_df, estimate_df, cfg):
         pytest.skip(f"cost_core not installed: {R.IMPORT_ERROR}")
     path = tmp_path_factory.mktemp("wb") / "risk.xlsx"
     proj, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
+    summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
     res = R.run_risk(
-        analogy_df["Qty"].to_numpy(float),
-        analogy_df["AUC ($K)"].to_numpy(float),
-        estimate_df["Qty"].to_numpy(int),
-        estimate_df["Complexity"].to_numpy(float),
-        cfg,
-        R.RiskOptions(dollar_year=2025, n_iter=4000, seed=11),
+        ctx, proj, summary, R.RiskOptions(n_iter=4000, seed=11)
     )
     M.save_complete_excel_workbook(
         str(path),
         proj,
-        M.generate_analyst_summary(ctx, {"Program": "TEST"}),
+        summary,
         M.generate_fit_chart_data(ctx),
         R.summary_frame(res),
         res.intervals,
