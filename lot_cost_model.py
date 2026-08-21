@@ -2,6 +2,7 @@ import numpy as np
 import openpyxl
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.layout import Layout, ManualLayout
 import pandas as pd
 
 # ============================================================================
@@ -1451,6 +1452,57 @@ def generate_fit_chart_data(
 # ============================================================================
 # 6. EXCEL WORKBOOK & SCATTER CHART GENERATOR (FIXED OPENPYXL TICK MARKS)
 # ============================================================================
+def _format_chart(
+    chart,
+    title: str,
+    x_title: str,
+    y_title: str,
+    width: float = 18,
+    height: float = 11,
+):
+    """Apply the same axis, title and legend treatment to every chart.
+
+    Two Excel quirks are handled here. openpyxl writes ``delete="1"`` onto a
+    freshly created axis, which tells Excel to hide that axis completely, tick
+    numbers and all; and a chart title defaults to overlaying the plot rather
+    than sitting above it. The manual plot-area layout then reserves room on
+    the left and bottom so the axis titles do not land on top of the tick
+    numbers.
+    """
+    chart.title = title
+    chart.style = 13
+    chart.title.overlay = False
+
+    chart.x_axis.title = x_title
+    chart.y_axis.title = y_title
+
+    for axis in (chart.x_axis, chart.y_axis):
+        axis.delete = False
+        axis.tickLblPos = "nextTo"
+        axis.majorTickMark = "out"
+        axis.minorTickMark = "none"
+        axis.numFmt = "#,##0"
+
+    chart.width = width
+    chart.height = height
+
+    # Keep the legend off the data.
+    if chart.legend is not None:
+        chart.legend.position = "b"
+        chart.legend.overlay = False
+
+    chart.layout = Layout(
+        manualLayout=ManualLayout(
+            xMode="edge",
+            yMode="edge",
+            x=0.11,
+            y=0.13,
+            w=0.86,
+            h=0.68,
+        )
+    )
+
+
 def save_complete_excel_workbook(
     filename: str,
     projections_df: pd.DataFrame,
@@ -1499,22 +1551,9 @@ def save_complete_excel_workbook(
         y_axis_title_text: str = "Unit Cost / AUC ($K)",
     ):
         chart = ScatterChart()
-        chart.title = title
-        chart.style = 13
-
-        # Text labels on axes
-        chart.x_axis.title = x_axis_title_text
-        chart.y_axis.title = y_axis_title_text
-
-        # Numeric tick marks & labels ('out' is the valid openpyxl value)
-        chart.x_axis.tickLblPos = "nextTo"
-        chart.y_axis.tickLblPos = "nextTo"
-        chart.x_axis.majorTickMark = "out"
-        chart.y_axis.majorTickMark = "out"
-
-        # Chart dimensions
-        chart.width = 16
-        chart.height = 10
+        _format_chart(
+            chart, title, x_axis_title_text, y_axis_title_text, 18, 11
+        )
 
         x_values = Reference(
             ws, min_col=x_col, min_row=2, max_row=max_r
@@ -1591,16 +1630,14 @@ def save_complete_excel_workbook(
         wsr = wb["Risk_Intervals"]
         last_r = len(risk_intervals_df) + 1
         band = ScatterChart()
-        band.title = "Forecast Unit Cost with Prediction Interval"
-        band.style = 13
-        band.x_axis.title = "Last Unit in Lot"
-        band.y_axis.title = "Unit Cost ($K)"
-        band.x_axis.tickLblPos = "nextTo"
-        band.y_axis.tickLblPos = "nextTo"
-        band.x_axis.majorTickMark = "out"
-        band.y_axis.majorTickMark = "out"
-        band.width = 20
-        band.height = 11
+        _format_chart(
+            band,
+            "Forecast Unit Cost with Prediction Interval",
+            "Last Unit in Lot",
+            "Unit Cost ($K)",
+            20,
+            11,
+        )
 
         xs = Reference(wsr, min_col=4, min_row=2, max_row=last_r)
         for col, dashed in ((6, False), (7, True), (8, True)):
