@@ -10,6 +10,7 @@ from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.chart.series import SeriesLabel
+from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.chart.text import RichText
 from openpyxl.drawing.text import (
     CharacterProperties,
@@ -1918,8 +1919,16 @@ def save_complete_excel_workbook(
         # the percentile and its cost, so the legend carries both while the
         # marker shows where it falls on the curve.
         pct = risk_scurve_df["Percentile"].round(4)
-        marks = [("P50", 0.50), ("P80", 0.80)]
-        for i, (name, level) in enumerate(marks):
+        # Left to its own palette Excel gives these two more shades of the
+        # curve's green, so they disappear into it. Fixed colours from the
+        # Okabe-Ito set, which stays distinguishable for the common colour
+        # vision deficiencies, plus a different shape each so the two are
+        # still telling apart in greyscale or on a photocopy.
+        marks = [
+            ("P50", 0.50, "0072B2", "circle"),      # blue
+            ("P80", 0.80, "D55E00", "diamond"),     # vermillion
+        ]
+        for i, (name, level, colour, symbol) in enumerate(marks):
             hit = risk_scurve_df.loc[pct == round(level, 4), "Buy Total ($)"]
             if hit.empty:
                 continue
@@ -1938,8 +1947,15 @@ def save_complete_excel_workbook(
                 xvalues=Reference(wss, min_col=x_col, min_row=2, max_row=2),
                 title_from_data=True,
             )
-            mark.marker.symbol = "circle"
-            mark.marker.size = 9
+            mark.marker.symbol = symbol
+            mark.marker.size = 11
+            # Filled in the marker's own colour with a white keyline, so it
+            # reads as a marker sitting on the curve rather than a kink in it.
+            marker_style = GraphicalProperties(solidFill=colour)
+            marker_style.line.solidFill = "FFFFFF"
+            marker_style.line.width = 19050  # 1.5pt, in EMU
+            mark.marker.graphicalProperties = marker_style
+            # No connecting line: these are single points.
             mark.graphicalProperties.line.noFill = True
             curve.series.append(mark)
 
