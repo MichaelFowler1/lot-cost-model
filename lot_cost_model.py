@@ -24,7 +24,13 @@ SETTINGS = {
     "EstimateTableName": "EstimateLots",
     "CostUnitScale": 1.0,  # 1 = $K, 1000 = full dollars
     "TotalScale": 1000.0,  # Applied on top of CostUnitScale for totals
-    "ToolMatchProjection": True,  # True = Rate & LC+Rate project on lot midpoint
+    # Reproduce a defect kept only for reconciling against legacy workbooks.
+    # When True, the Rate model projects on the lot midpoint although it was
+    # fitted against lot quantity, and the LC+Rate model drops its qty**c term
+    # entirely. Both make projections that do not satisfy the equation the tool
+    # prints, and because the rate exponent is negative the error is always
+    # upward. Leave this False. See LEGACY_KEY below.
+    "LegacyRateOmission": False,
     "DefaultCF": 1.0,
     "FitPriorUnits": 0,
     "FcstPriorUnits": 0,
@@ -41,6 +47,10 @@ SETTINGS = {
     "DefaultRunLabel": "unlabeled run",
     "BaseYear": "",
 }
+
+#: The setting LegacyRateOmission replaced. Passing it is an error rather than
+#: a no-op, because it used to default to the behaviour that is now off.
+LEGACY_KEY = "ToolMatchProjection"
 
 
 # ============================================================================
@@ -219,6 +229,16 @@ def run_lot_cost_model(
 ) -> tuple[pd.DataFrame, dict]:
     cfg = SETTINGS.copy()
     if config_overrides:
+        if LEGACY_KEY in config_overrides:
+            # Silently honouring the new default would hand a caller who asked
+            # for legacy behaviour a different set of numbers without saying so.
+            raise ValueError(
+                f"'{LEGACY_KEY}' was replaced by 'LegacyRateOmission'.\n\n"
+                f"{LEGACY_KEY}=True is now LegacyRateOmission=True, and "
+                f"{LEGACY_KEY}=False is now LegacyRateOmission=False. The "
+                "default changed: projections now satisfy the fitted equation, "
+                "which lowers any estimate where Rate or LC+Rate was selected."
+            )
         cfg.update(config_overrides)
 
     if analogy_df.empty:
@@ -566,7 +586,10 @@ def run_lot_cost_model(
         )
     ]
     if pd.notna(t1_rt):
-        if cfg["ToolMatchProjection"]:
+        if cfg["LegacyRateOmission"]:
+            # Wrong on purpose: the Rate model was fitted against lot
+            # quantity, so projecting on the midpoint evaluates it at a
+            # different variable than it was fitted on.
             res_df["RT_UnitCost"] = (
                 t1_rt
                 * (res_df["RT_LMP"] ** b_rt)
@@ -600,9 +623,12 @@ def run_lot_cost_model(
         )
     ]
     if pd.notna(t1_br):
+        # Dropping qty**c evaluates the fit at a lot quantity of one unit
+        # while keeping the real lot's learning position, which is not a
+        # production rate anybody chose to hold it at.
         rate_factor = (
             1.0
-            if cfg["ToolMatchProjection"]
+            if cfg["LegacyRateOmission"]
             else (res_df["Qty"] ** c_br)
         )
         res_df["LCR_UnitCost"] = (
@@ -2222,8 +2248,8 @@ class LotCostApp(tk.Tk):
         self.var_fcstprior = tk.StringVar(
             value=str(SETTINGS["FcstPriorUnits"])
         )
-        self.var_toolmatch = tk.BooleanVar(
-            value=SETTINGS["ToolMatchProjection"]
+        self.var_legacy_rate = tk.BooleanVar(
+            value=SETTINGS["LegacyRateOmission"]
         )
 
         s_fields = [
@@ -2247,9 +2273,16 @@ class LotCostApp(tk.Tk):
                 )
         ttk.Checkbutton(
             box2,
-            text="Project Rate & LC+Rate on lot midpoint (tool match)",
-            variable=self.var_toolmatch,
-        ).grid(row=len(s_fields), column=0, columnspan=3, sticky="w", padx=8, pady=6)
+            text=(
+                "Legacy rate omission: drop the rate term when projecting "
+                "(overstates Rate and LC+Rate; for reconciling old workbooks "
+                "only)"
+            ),
+            variable=self.var_legacy_rate,
+        ).grid(
+            row=len(s_fields), column=0, columnspan=3, sticky="w", padx=8,
+            pady=6,
+        )
 
     def _build_results(self):
         f = self.tab_results
@@ -2662,7 +2695,7 @@ class LotCostApp(tk.Tk):
             "FcstPriorUnits": num(
                 self.var_fcstprior, "Prior units (forecast)", int
             ),
-            "ToolMatchProjection": bool(self.var_toolmatch.get()),
+            "LegacyRateOmission": bool(self.var_legacy_rate.get()),
         }
 
     def _save_workbook(

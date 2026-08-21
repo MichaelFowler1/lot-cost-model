@@ -12,6 +12,41 @@ put a prediction interval and a Monte Carlo around the answer.
 
 ![Data entry window](docs/screenshot-input.png)
 
+## Correction: rate projections were overstated
+
+**If you produced an estimate with this tool and the Rate or LC+Rate model was
+selected, that estimate is too high and should be re-run.** LC selections are
+unaffected, because LC has no rate term to drop.
+
+The tool fitted `cost = T1 * midpoint^b * qty^c` and then projected without the
+`qty^c` factor, so the printed lot costs did not satisfy the printed equation.
+Dropping that term evaluates the fit at a lot quantity of one unit while
+keeping the real lot's learning position, which is not a production rate anyone
+chose to hold it at. The rate exponent is negative and lot quantities are
+greater than one, so the error only ever ran upward. The Rate model had the
+same problem from the other direction: it regresses on lot quantity but was
+projected on the lot midpoint.
+
+How far off depends on the rate exponent and the lot sizes. On the fixture in
+`tests/test_equation_conformance.py`, which back-casts six lots whose real
+total is known, LC+Rate came out **36% high**, and the P80 it fed into the risk
+tab was overstated by about as much.
+
+The setting that controlled this, `ToolMatchProjection`, is now
+`LegacyRateOmission` and defaults to `False`. The old behaviour is still
+reachable for reconciling against a workbook produced earlier, but you have to
+ask for it by name. Passing the old key raises rather than being ignored, since
+a caller who wanted legacy behaviour and silently got the corrected numbers
+would be worse off than one who gets an error.
+
+The tests that would have caught this now exist. They retype each fitted
+equation, evaluate it for every projected lot, and compare to the cent the
+column is rounded to. The previous suite passed with the defect present *and*
+absent, which is exactly why it survived: shape tests ("unit cost falls across
+the buy") stay true when every number is scaled, and consistency tests ("the
+risk total matches the projections sheet") only confirm that two numbers
+derived from the same wrong projection agree with each other.
+
 ## What it does
 
 Give it a set of historical lots (fiscal year, quantity, average unit cost) and
@@ -171,9 +206,16 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-71 tests with `cost_core` installed, 35 without (the risk ones skip). CI runs
-both, because "works when the optional dependency is missing" is a claim worth
-checking rather than asserting.
+85 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+runs both, because "works when the optional dependency is missing" is a claim
+worth checking rather than asserting.
+
+The most important ones are in `test_equation_conformance.py`. They retype each
+fitted equation, evaluate it for every projected lot, and assert it matches the
+projected cost to the cent. Nothing there reads a projected number to decide
+what the answer should be, which is what makes them able to catch a wrong
+formula. There is also a back-cast that prices the analogy lots as the estimate
+and recovers their known actual total.
 
 A few of them exist for a specific reason. The most important assert that the
 risk numbers describe the same thing the projections sheet does: the same
