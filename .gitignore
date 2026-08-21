@@ -1,7 +1,8 @@
-# Model output. Never commit real program data.
+# Model output and saved runs. Never commit real program data.
 *.xlsx
 *.xls
 *.csv
+*.lotrun.json
 
 __pycache__/
 *.py[cod]

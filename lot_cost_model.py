@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime
+
 import numpy as np
 import openpyxl
 from openpyxl.chart import Reference, ScatterChart, Series
@@ -41,7 +45,7 @@ SETTINGS = {
     "SingularTol": 1e-12,
     "TGate": 2.0,
     "AiccTie": 2.0,
-    "ToolVersion": "2.0-dev",
+    "ToolVersion": None,  # filled from TOOL_VERSION; see provenance()
     "DefaultRunID": "R001",
     "DefaultProgram": "TEST",
     "DefaultRunLabel": "unlabeled run",
@@ -51,6 +55,66 @@ SETTINGS = {
 #: The setting LegacyRateOmission replaced. Passing it is an error rather than
 #: a no-op, because it used to default to the behaviour that is now off.
 LEGACY_KEY = "ToolMatchProjection"
+
+#: Bumped to 2.1.0 for the rate-projection correction. Anything a 2.0 build
+#: produced with Rate or LC+Rate selected is overstated, and the version was
+#: hardcoded to "2.0-dev" for every run, so an old workbook cannot be dated
+#: from the inside. Recording it properly is the point of provenance() below.
+TOOL_VERSION = "2.1.0"
+
+
+def _source_revision() -> str:
+    """Short git revision of this checkout, when it is one.
+
+    An installed copy or a downloaded zip has no repository, which is not an
+    error: the version string still identifies the release.
+    """
+    import subprocess
+
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.run(
+            ["git", "-C", here, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            dirty = subprocess.run(
+                ["git", "-C", here, "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            suffix = "+modified" if dirty.stdout.strip() else ""
+            return out.stdout.strip() + suffix
+    except Exception:
+        pass
+    return ""
+
+
+def provenance(cfg: dict | None = None) -> dict:
+    """What produced this run, so a saved workbook can be identified later.
+
+    A workbook that cannot say which build made it also cannot say whether it
+    predates a correction, which is exactly the position every estimate this
+    tool produced before 2.1.0 is in.
+    """
+    cfg = cfg or SETTINGS
+    rev = _source_revision()
+    legacy = bool(cfg.get("LegacyRateOmission", False))
+    return {
+        "Tool version": TOOL_VERSION + (f" ({rev})" if rev else ""),
+        "Run timestamp": datetime.now().astimezone().strftime(
+            "%Y-%m-%d %H:%M:%S %Z"
+        ),
+        "Rate projection": (
+            "LEGACY - Rate and LC+Rate are overstated; for reconciling a "
+            "pre-2.1.0 workbook only"
+            if legacy
+            else "corrected (projections satisfy the fitted equation)"
+        ),
+    }
 
 
 # ============================================================================
@@ -1196,7 +1260,10 @@ def generate_analyst_summary(
         r5("Run ID", run_id, "", "", ""),
         r5("Program", program, "", "", ""),
         r5("Run label", run_label, "", "", ""),
-        r5("Tool version", cfg["ToolVersion"], "", "", ""),
+        *[
+            r5(item, value, "", "", "")
+            for item, value in provenance(cfg).items()
+        ],
         r5("Cost basis", cost_basis_txt, "", "", ""),
         r5("Source table", cfg["AnalogyTableName"], "", "", ""),
         r5("Analogy lots in fit", str(n_keep), "", "", ""),
@@ -2070,6 +2137,48 @@ class LotGrid(ttk.Frame):
         return out
 
 
+#: Marker and schema version for a saved run. The version is bumped only when
+#: an older file can no longer be read as written.
+RUN_FORMAT = "lot-cost-model-run"
+RUN_FORMAT_VERSION = 1
+RUN_SUFFIX = ".lotrun.json"
+
+
+class RunFileError(Exception):
+    """A saved run could not be read."""
+
+
+def read_run_file(path: str) -> dict:
+    """Load and validate a saved run.
+
+    Raises:
+        RunFileError: If the file is not a saved run, or was written by a
+            newer format than this build understands.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        raise RunFileError(
+            f"{os.path.basename(path)} is not a saved run: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise RunFileError(f"Could not open {path}: {exc}") from exc
+
+    if not isinstance(data, dict) or data.get("format") != RUN_FORMAT:
+        raise RunFileError(
+            f"{os.path.basename(path)} is not a lot cost model run file."
+        )
+    version = data.get("format_version", 0)
+    if not isinstance(version, int) or version > RUN_FORMAT_VERSION:
+        raise RunFileError(
+            f"{os.path.basename(path)} was written in run format {version}, "
+            f"and this build reads up to {RUN_FORMAT_VERSION}. Update the "
+            "tool to open it."
+        )
+    return data
+
+
 class LotCostApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -2114,12 +2223,15 @@ class LotCostApp(tk.Tk):
 
         self.risk_result = None
 
+        self.run_path: str | None = None
+
         self._build_analogy()
         self._build_estimate()
         self._build_runinfo()
         self._build_results()
         self._build_risk()
         self._build_actionbar()
+        self._build_menu()
 
     # -- tabs ---------------------------------------------------------------
     def _build_analogy(self):
@@ -2304,6 +2416,182 @@ class LotCostApp(tk.Tk):
         vs.pack(side="right", fill="y")
         self.tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.tree.tag_configure("sel", background="#dff0d8")
+
+    # -- saving and reloading a run -----------------------------------------
+    def _build_menu(self):
+        bar = tk.Menu(self)
+        run_menu = tk.Menu(bar, tearoff=0)
+        run_menu.add_command(
+            label="Open Run...", accelerator="Ctrl+O", command=self.open_run
+        )
+        run_menu.add_command(
+            label="Save Run", accelerator="Ctrl+S", command=self.save_run
+        )
+        run_menu.add_command(label="Save Run As...", command=self.save_run_as)
+        run_menu.add_separator()
+        run_menu.add_command(label="Load Example", command=self.load_example)
+        bar.add_cascade(label="Run", menu=run_menu)
+        self.config(menu=bar)
+        self.bind_all("<Control-o>", lambda e: self.open_run())
+        self.bind_all("<Control-s>", lambda e: self.save_run())
+
+    def run_state(self) -> dict:
+        """Everything needed to reproduce this run, as plain data."""
+        return {
+            "format": RUN_FORMAT,
+            "format_version": RUN_FORMAT_VERSION,
+            "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "tool_version": TOOL_VERSION,
+            "run_info": self._run_info(),
+            "settings": self._collect_overrides(),
+            "risk": {
+                "level": self.var_level.get(),
+                "iterations": self.var_iters.get(),
+                "seed": self.var_seed.get(),
+                "lot_correlation": self.var_rho.get(),
+                "run_with_model": bool(self.var_do_risk.get()),
+            }
+            if hasattr(self, "var_level")
+            else {},
+            "analogy_lots": self.grid_analogy.get_rows(),
+            "estimate_lots": self.grid_estimate.get_rows(),
+            "output_path": self.var_outfile.get().strip(),
+        }
+
+    def apply_run_state(self, data: dict):
+        """Populate the window from a saved run."""
+        self.grid_analogy.load(
+            [tuple(r) for r in data.get("analogy_lots", [])] or [("", "", "")]
+        )
+        self.grid_estimate.load(
+            [tuple(r) for r in data.get("estimate_lots", [])] or [("", "", "")]
+        )
+
+        info = data.get("run_info", {})
+        self.var_runid.set(info.get("RunID", ""))
+        self.var_program.set(info.get("Program", ""))
+        self.var_label.set(info.get("RunLabel", ""))
+        self.var_baseyear.set(info.get("BaseYear", ""))
+
+        settings = data.get("settings", {})
+        pairs = [
+            ("CostUnitScale", self.var_costscale),
+            ("TotalScale", self.var_totalscale),
+            ("DefaultCF", self.var_defaultcf),
+            ("TGate", self.var_tgate),
+            ("FitPriorUnits", self.var_fitprior),
+            ("FcstPriorUnits", self.var_fcstprior),
+        ]
+        for key, var in pairs:
+            if key in settings:
+                var.set(str(settings[key]))
+        legacy = bool(settings.get("LegacyRateOmission", False))
+        self.var_legacy_rate.set(legacy)
+
+        risk_cfg = data.get("risk", {})
+        for key, var in (
+            ("level", getattr(self, "var_level", None)),
+            ("iterations", getattr(self, "var_iters", None)),
+            ("seed", getattr(self, "var_seed", None)),
+            ("lot_correlation", getattr(self, "var_rho", None)),
+        ):
+            if var is not None and key in risk_cfg:
+                var.set(str(risk_cfg[key]))
+        if hasattr(self, "var_do_risk") and "run_with_model" in risk_cfg:
+            self.var_do_risk.set(bool(risk_cfg["run_with_model"]))
+
+        if data.get("output_path"):
+            self.var_outfile.set(data["output_path"])
+
+        if legacy:
+            # Loading a legacy run silently would reproduce overstated costs
+            # without saying so.
+            messagebox.showwarning(
+                "Legacy rate projection",
+                "This run was saved with the legacy rate projection turned "
+                "on, and that setting has been restored.\n\n"
+                "Rate and LC+Rate costs will come out overstated. Untick it "
+                "on the Run Info & Settings tab unless you are deliberately "
+                "reproducing an old workbook.",
+            )
+
+    def open_run(self):
+        path = filedialog.askopenfilename(
+            title="Open a saved run",
+            filetypes=[("Lot cost model run", "*.json"), ("All files", "*.*")],
+            initialdir=os.path.dirname(self.run_path or "")
+            or default_output_dir(),
+        )
+        if not path:
+            return
+        try:
+            data = read_run_file(path)
+        except RunFileError as exc:
+            messagebox.showerror("Could not open run", str(exc))
+            return
+        try:
+            self.apply_run_state(data)
+        except Exception as exc:
+            messagebox.showerror(
+                "Could not load run",
+                f"{type(exc).__name__}: {exc}\n\nThe file may be damaged.",
+            )
+            return
+        self.run_path = path
+        saved = data.get("saved_at", "")
+        version = data.get("tool_version", "unknown")
+        self.var_status.set(
+            f"Loaded {os.path.basename(path)}"
+            + (f" (saved {saved} by {version})" if saved else "")
+        )
+
+    def save_run(self):
+        if not self.run_path:
+            return self.save_run_as()
+        return self._write_run(self.run_path)
+
+    def save_run_as(self):
+        base = self.var_program.get().strip() or "run"
+        path = filedialog.asksaveasfilename(
+            title="Save this run",
+            defaultextension=".json",
+            filetypes=[("Lot cost model run", "*.json")],
+            initialfile=f"{base}{RUN_SUFFIX}",
+            initialdir=os.path.dirname(self.run_path or "")
+            or default_output_dir(),
+        )
+        if not path:
+            return None
+        return self._write_run(path)
+
+    def _write_run(self, path: str):
+        try:
+            state = self.run_state()
+        except ValueError as exc:
+            messagebox.showerror("Check your settings", str(exc))
+            return None
+        while True:
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(state, fh, indent=2)
+                break
+            except PermissionError:
+                if not messagebox.askretrycancel(
+                    "Cannot write the file",
+                    f"Could not write to:\n{path}\n\n"
+                    "The file may be open elsewhere, or the folder may be "
+                    "read-only.",
+                ):
+                    return None
+        self.run_path = path
+        self.var_status.set(f"Run saved: {path}")
+        return path
+
+    def load_example(self):
+        self.grid_analogy.load(EXAMPLE_ANALOGY)
+        self.grid_estimate.load(EXAMPLE_ESTIMATE)
+        self.nb.select(self.tab_analogy)
+        self.var_status.set("Example data loaded.")
 
     def _build_risk(self):
         f = self.tab_risk

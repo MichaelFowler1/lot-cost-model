@@ -108,6 +108,38 @@ and plain spaces all work as separators.
 
 Each grid also has a Load Example button if you just want to see it run.
 
+## Saving a run
+
+The Run menu saves everything the window holds to a small JSON file: both sets
+of lots, the run info, every setting, and the risk options. Open it later and
+you are back where you were.
+
+That is worth more than the typing it saves. A saved run makes an estimate
+reproducible, and the Monte Carlo seed goes in the file too, so reopening it
+six months later gives the same P80 rather than a similar one. It is also what
+makes the correction below actionable: re-running an old estimate against a
+fixed build is a file-open rather than a retyping exercise.
+
+Reloading a run that was saved with the legacy rate projection restores that
+setting and says so, rather than quietly reproducing overstated costs.
+
+## Knowing what produced a workbook
+
+The Analyst_Summary sheet opens with the tool version, the git revision when
+run from a checkout, a timestamp, and whether the rate projection was the
+corrected one or the legacy one:
+
+```
+Tool version      2.1.0 (d71f8f9)
+Run timestamp     2026-08-21 19:45:45 Eastern Daylight Time
+Rate projection   corrected (projections satisfy the fitted equation)
+```
+
+Before 2.1.0 that row read `2.0-dev` on every build ever released, so a
+workbook could not be dated from the inside. If you are holding one that does
+not carry these rows, it predates the correction, and if Rate or LC+Rate was
+the selected model then its costs are overstated.
+
 ## A few things worth knowing
 
 Leave the unit cost blank on an analogy lot to make it quantity-only. Those
@@ -206,7 +238,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-85 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+102 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 
