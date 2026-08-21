@@ -3,6 +3,13 @@ import openpyxl
 from openpyxl.chart import Reference, ScatterChart, Series
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.text import RichText
+from openpyxl.drawing.text import (
+    CharacterProperties,
+    Paragraph,
+    ParagraphProperties,
+    RichTextProperties,
+)
 from openpyxl.utils import get_column_letter
 import pandas as pd
 
@@ -1554,6 +1561,11 @@ def save_complete_excel_workbook(
     ws = wb["Fit_Chart_Data"]
     max_r = len(chart_df) + 1  # 1-indexed including header
 
+    # Data labels inherit the source cell's number format, so format the
+    # actual-AUC column and the labels come out with a thousands separator.
+    for row in range(2, max_r + 1):
+        ws.cell(row=row, column=5).number_format = "#,##0.00"
+
     fit_chart_width = 18
 
     def build_scatter_chart(
@@ -1595,9 +1607,39 @@ def save_complete_excel_workbook(
         s_act.marker.size = 7
         s_act.graphicalProperties.line.noFill = True
 
-        # Show actual cost values on scatter points
-        s_act.dataLabels = DataLabelList()
-        s_act.dataLabels.showVal = True
+        # Print the actual AUC beside each marker.
+        #
+        # The attribute is dLbls. A Series has no `dataLabels` alias, unlike a
+        # chart, so assigning to `series.dataLabels` sets a stray Python
+        # attribute that never reaches the XML -- no error, no labels. The
+        # other show flags are written explicitly because Excel treats an
+        # absent flag as inherited rather than false.
+        labels = DataLabelList()
+        labels.showVal = True
+        labels.showSerName = False
+        labels.showCatName = False
+        labels.showLegendKey = False
+        labels.showBubbleSize = False
+        labels.showPercent = False
+        labels.dLblPos = "t"  # above the marker, clear of the fitted line
+        # openpyxl can only write formatCode here, never sourceLinked, so
+        # Excel falls back to the source cell's format. The AUC column is
+        # formatted below to match.
+        labels.numFmt = "#,##0.00"
+        # 8pt, because the rate chart puts lots of equal quantity almost on
+        # top of each other and full-size labels collide.
+        labels.txPr = RichText(
+            bodyPr=RichTextProperties(),
+            p=[
+                Paragraph(
+                    pPr=ParagraphProperties(
+                        defRPr=CharacterProperties(sz=800)
+                    ),
+                    endParaRPr=CharacterProperties(sz=800),
+                )
+            ],
+        )
+        s_act.dLbls = labels
 
         # Estimates: Smooth Fitted Curve (No markers)
         s_est = Series(
