@@ -1,3 +1,6 @@
 numpy
 pandas
 openpyxl
+
+# Optional: enables the Risk & Intervals tab (needs Python 3.11+).
+# pip install git+https://github.com/MichaelFowler1/cost-risk-toolkit.git

@@ -5,7 +5,8 @@ projecting unit costs for future buys. You type your lots into a window, click
 Run, and get an Excel workbook back with the fit statistics, the lot-by-lot
 projections, and three charts.
 
-It fits three competing models and tells you which one it picked and why.
+It fits three competing models, tells you which one it picked and why, and can
+put a prediction interval and a Monte Carlo around the answer.
 
 ![Data entry window](docs/screenshot-input.png)
 
@@ -41,6 +42,20 @@ pip install numpy pandas openpyxl
 The interface uses tkinter, which already ships with Python, so there's nothing
 else to install.
 
+### Optional: risk analysis
+
+Tab 5 adds prediction intervals and a Monte Carlo of the whole buy. That part
+leans on `cost_core` from the
+[cost-risk-toolkit](https://github.com/MichaelFowler1/cost-risk-toolkit),
+which needs Python 3.11 or newer:
+
+```
+pip install git+https://github.com/MichaelFowler1/cost-risk-toolkit.git
+```
+
+Skip it and everything else still works. The tab just shows you how to install
+it, and the workbook comes out with its usual three sheets.
+
 ## Running it
 
 ```
@@ -71,15 +86,67 @@ before the rate models will even be attempted.
 
 ## Output
 
-Three sheets:
-
 | Sheet | What's on it |
 |---|---|
 | `Analyst_Summary` | Side by side comparison of all three models, with the selection called out |
 | `Estimate_Projections` | Row per forecast lot: midpoint, unit cost, lot cost before and after complexity, plus every fit statistic |
 | `Fit_Chart_Data` | How each model did against the historical lots, with residuals, and three scatter charts |
+| `Risk_Summary` | Fitted parameters, the buy total with its interval, the simulated percentiles, and the assumptions behind them |
+| `Risk_Intervals` | Row per forecast lot with low and high bounds, and a chart of the band |
+
+The last two appear only when `cost_core` is installed and the risk analysis
+ran.
 
 ![Results tab](docs/screenshot-results.png)
+
+## Risk and prediction intervals
+
+The deterministic tabs give you a point estimate. They say nothing about how
+much confidence it deserves, which is the first thing anybody reviewing an
+estimate asks. Tab 5 answers it.
+
+![Risk tab](docs/screenshot-risk.png)
+
+Rather than write the statistics a second time, this hands the same lots to
+`cost_core` and reports what comes back: a prediction interval on every
+forecast lot, and a Monte Carlo of the total buy with P50, P80 and P90. The
+simulation propagates two things, parameter uncertainty in the fitted slope and
+T1, which dominates on a short series, and lot-to-lot scatter, which is what
+makes the answer a prediction about a real lot rather than a statement about
+where the line sits. Future lots are correlated at 0.30 by default because
+consecutive lots share a workforce and a schedule, and pretending otherwise
+lets the shocks cancel and understates the spread of the whole buy.
+
+Two things about the handoff are worth knowing.
+
+`cost_core` fits the **exact lot average**, in closed form under Wright and by
+summation under Crawford. This tool fits the **lot midpoint** approximation.
+Those are different estimators, so their parameters land close without
+matching. On the bundled example, the tool gets a T1 of $1,010.80 at an 89.71%
+slope and `cost_core` gets $1,012.60 at 89.68%, and the two buy totals differ
+by about 0.01%. That agreement is the useful part: if the two ever diverge by
+much, something about the data deserves a look before either number gets used.
+
+The other is quantity-only lots. `cost_core.lots` reads a CSV and drops any row
+missing a cost, which also drops those units from the cumulative count and
+shifts every later lot along the curve. This tool holds them, so the bridge
+fits against explicit unit ranges instead of handing over a lot series. Those
+units stay where they belong.
+
+### What it does not cover
+
+Schedule risk, requirement changes, and rate changes the history never saw.
+It's production cost risk conditional on the program continuing as it has been,
+which is a narrower claim than a full risk model.
+
+The complexity factor scales the interval as a certain multiplier. Its own
+uncertainty isn't modelled.
+
+And if you're pricing from unit 1, you're using the curve as an analogy for a
+different program. Whether the slope carries across is a judgement about
+product, process, rate and contractor. Nothing in the data can confirm it, and
+the extra error it introduces is in none of the intervals. The tab says so on
+every run.
 
 ## About the example data
 

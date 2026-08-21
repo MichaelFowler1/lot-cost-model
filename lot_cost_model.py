@@ -1456,8 +1456,14 @@ def save_complete_excel_workbook(
     projections_df: pd.DataFrame,
     summary_df: pd.DataFrame,
     chart_df: pd.DataFrame,
+    risk_summary_df: pd.DataFrame | None = None,
+    risk_intervals_df: pd.DataFrame | None = None,
 ):
-    """Write all 3 tables and embed native Excel scatter plots."""
+    """Write the tables and embed native Excel scatter plots.
+
+    The two risk frames are optional: they are present only when cost_core is
+    installed and the risk analysis ran.
+    """
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
         summary_df.to_excel(
             writer, sheet_name="Analyst_Summary", index=False
@@ -1470,6 +1476,14 @@ def save_complete_excel_workbook(
         chart_df.to_excel(
             writer, sheet_name="Fit_Chart_Data", index=False
         )
+        if risk_summary_df is not None:
+            risk_summary_df.to_excel(
+                writer, sheet_name="Risk_Summary", index=False
+            )
+        if risk_intervals_df is not None:
+            risk_intervals_df.to_excel(
+                writer, sheet_name="Risk_Intervals", index=False
+            )
 
     wb = openpyxl.load_workbook(filename)
     ws = wb["Fit_Chart_Data"]
@@ -1572,6 +1586,38 @@ def save_complete_excel_workbook(
         y_axis_title_text="Unit Cost / AUC ($K)",
     )
 
+    # Chart 4: the forecast with its prediction band, on the risk sheet.
+    if risk_intervals_df is not None and len(risk_intervals_df):
+        wsr = wb["Risk_Intervals"]
+        last_r = len(risk_intervals_df) + 1
+        band = ScatterChart()
+        band.title = "Forecast Unit Cost with Prediction Interval"
+        band.style = 13
+        band.x_axis.title = "Last Unit in Lot"
+        band.y_axis.title = "Unit Cost ($K)"
+        band.x_axis.tickLblPos = "nextTo"
+        band.y_axis.tickLblPos = "nextTo"
+        band.x_axis.majorTickMark = "out"
+        band.y_axis.majorTickMark = "out"
+        band.width = 20
+        band.height = 11
+
+        xs = Reference(wsr, min_col=4, min_row=2, max_row=last_r)
+        for col, dashed in ((6, False), (7, True), (8, True)):
+            s = Series(
+                values=Reference(
+                    wsr, min_col=col, min_row=1, max_row=last_r
+                ),
+                xvalues=xs,
+                title_from_data=True,
+            )
+            s.marker.symbol = "circle" if not dashed else "none"
+            s.smooth = False
+            if dashed:
+                s.graphicalProperties.line.dashStyle = "dash"
+            band.series.append(s)
+        wsr.add_chart(band, "M2")
+
     wb.save(filename)
 
 
@@ -1584,6 +1630,13 @@ import sys
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+# Optional. Without it every deterministic feature still works; only the
+# Risk tab goes dark.
+try:
+    import risk
+except Exception:  # pragma: no cover - depends on the install
+    risk = None
 
 # Demo data for the "Load Example" buttons. These numbers are invented:
 # they were generated from a 90% learning curve with a $1,000K first unit
@@ -1791,16 +1844,21 @@ class LotCostApp(tk.Tk):
         self.tab_estimate = ttk.Frame(nb)
         self.tab_run = ttk.Frame(nb)
         self.tab_results = ttk.Frame(nb)
+        self.tab_risk = ttk.Frame(nb)
         nb.add(self.tab_analogy, text="  1. Analogy Lots  ")
         nb.add(self.tab_estimate, text="  2. Estimate Lots  ")
         nb.add(self.tab_run, text="  3. Run Info & Settings  ")
         nb.add(self.tab_results, text="  4. Results  ")
+        nb.add(self.tab_risk, text="  5. Risk & Intervals  ")
         self.nb = nb
+
+        self.risk_result = None
 
         self._build_analogy()
         self._build_estimate()
         self._build_runinfo()
         self._build_results()
+        self._build_risk()
         self._build_actionbar()
 
     # -- tabs ---------------------------------------------------------------
@@ -1980,6 +2038,248 @@ class LotCostApp(tk.Tk):
         self.tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.tree.tag_configure("sel", background="#dff0d8")
 
+    def _build_risk(self):
+        f = self.tab_risk
+
+        available = risk is not None and risk.AVAILABLE
+        if not available:
+            why = (
+                "risk.py is not next to this script."
+                if risk is None
+                else risk.IMPORT_ERROR
+            )
+            ttk.Label(
+                f,
+                text=(
+                    "Risk analysis unavailable.\n\n"
+                    + (risk.INSTALL_HINT if risk is not None else why)
+                    + f"\n\nDetail: {why}"
+                ),
+                style="Sub.TLabel",
+                justify="left",
+            ).pack(anchor="w", padx=12, pady=14)
+            self.var_do_risk = tk.BooleanVar(value=False)
+            self.tree_risk = None
+            self.tree_iv = None
+            return
+
+        ttk.Label(
+            f,
+            text=(
+                "Prediction intervals and a Monte Carlo of the whole buy, "
+                "fitted by cost_core from the\ncost-risk-toolkit. It fits the "
+                "exact lot average rather than the lot midpoint, so its "
+                "parameters\nwill sit close to the LC model on tab 4 without "
+                "matching it exactly. A wide gap is worth investigating."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+
+        ctl = ttk.LabelFrame(f, text="Settings")
+        ctl.pack(fill="x", padx=8, pady=4)
+
+        self.var_theory = tk.StringVar(value="crawford")
+        self.var_method = tk.StringVar(value="ols")
+        self.var_level = tk.StringVar(value="80")
+        self.var_iters = tk.StringVar(value="20000")
+        self.var_seed = tk.StringVar(value="11")
+        self.var_rho = tk.StringVar(value="0.30")
+        self.var_basis = tk.StringVar(value="recurring")
+        self.var_resid = tk.BooleanVar(value=True)
+        self.var_do_risk = tk.BooleanVar(value=True)
+
+        def combo(row, col, label, var, values, width=12):
+            ttk.Label(ctl, text=label + ":").grid(
+                row=row, column=col * 2, sticky="e", padx=(8, 4), pady=4
+            )
+            w = ttk.Combobox(
+                ctl, textvariable=var, values=values, width=width,
+                state="readonly",
+            )
+            w.grid(row=row, column=col * 2 + 1, sticky="w", pady=4)
+            return w
+
+        def entry(row, col, label, var, width=12):
+            ttk.Label(ctl, text=label + ":").grid(
+                row=row, column=col * 2, sticky="e", padx=(8, 4), pady=4
+            )
+            ttk.Entry(ctl, textvariable=var, width=width).grid(
+                row=row, column=col * 2 + 1, sticky="w", pady=4
+            )
+
+        combo(0, 0, "Theory", self.var_theory, list(risk.THEORIES))
+        combo(0, 1, "Method", self.var_method, list(risk.METHODS))
+        combo(0, 2, "Interval %", self.var_level, ["80", "90", "95"], 8)
+        entry(1, 0, "Iterations", self.var_iters)
+        entry(1, 1, "Seed", self.var_seed)
+        entry(1, 2, "Lot correlation", self.var_rho, 8)
+        combo(2, 0, "Cost basis", self.var_basis, ["recurring", "total"])
+        ttk.Checkbutton(
+            ctl,
+            text="Include lot-to-lot scatter (prediction, not confidence)",
+            variable=self.var_resid,
+        ).grid(row=2, column=2, columnspan=4, sticky="w", padx=8)
+        ttk.Checkbutton(
+            ctl,
+            text="Run this automatically with Run Model and add it to the workbook",
+            variable=self.var_do_risk,
+        ).grid(row=3, column=0, columnspan=6, sticky="w", padx=8, pady=(2, 6))
+
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", padx=8, pady=(2, 6))
+        ttk.Button(
+            bar, text="Run Risk Analysis", command=self.run_risk
+        ).pack(side="left")
+        self.var_risk_status = tk.StringVar(
+            value="Not run yet. Needs a base year on tab 3."
+        )
+        ttk.Label(
+            bar, textvariable=self.var_risk_status, style="Sub.TLabel"
+        ).pack(side="left", padx=10)
+
+        panes = ttk.Panedwindow(f, orient="vertical")
+        panes.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        top = ttk.Frame(panes)
+        self.tree_risk = ttk.Treeview(
+            top, columns=("Item", "Value"), show="headings", height=9
+        )
+        self.tree_risk.heading("Item", text="Item")
+        self.tree_risk.heading("Value", text="Value")
+        self.tree_risk.column("Item", width=230, anchor="w")
+        self.tree_risk.column("Value", width=680, anchor="w")
+        sv = ttk.Scrollbar(top, orient="vertical",
+                           command=self.tree_risk.yview)
+        self.tree_risk.configure(yscrollcommand=sv.set)
+        sv.pack(side="right", fill="y")
+        self.tree_risk.pack(fill="both", expand=True)
+        panes.add(top, weight=3)
+
+        bot = ttk.Frame(panes)
+        iv_cols = (
+            "Lot", "Qty", "First", "Last", "CF",
+            "Unit Cost ($K)", "Low", "High", "Lot Cost ($)",
+        )
+        self.tree_iv = ttk.Treeview(
+            bot, columns=iv_cols, show="headings", height=8
+        )
+        for c, w in zip(iv_cols, (45, 45, 55, 55, 50, 110, 95, 95, 130)):
+            self.tree_iv.heading(c, text=c)
+            self.tree_iv.column(c, width=w, anchor="e")
+        sv2 = ttk.Scrollbar(bot, orient="vertical", command=self.tree_iv.yview)
+        self.tree_iv.configure(yscrollcommand=sv2.set)
+        sv2.pack(side="right", fill="y")
+        self.tree_iv.pack(fill="both", expand=True)
+        panes.add(bot, weight=2)
+
+    def _risk_options(self) -> "risk.RiskOptions":
+        def num(var, label, caster):
+            try:
+                return caster(var.get().strip())
+            except ValueError:
+                raise ValueError(f"Risk setting '{label}' must be a number.")
+
+        year_txt = self.var_baseyear.get().strip()
+        year = None
+        if year_txt:
+            try:
+                year = int(float(year_txt))
+            except ValueError:
+                raise ValueError(
+                    f"Base year '{year_txt}' is not a year. Set it on tab 3."
+                )
+
+        return risk.RiskOptions(
+            theory=self.var_theory.get(),
+            method=self.var_method.get(),
+            level=num(self.var_level, "Interval %", float) / 100.0,
+            n_iter=num(self.var_iters, "Iterations", int),
+            seed=num(self.var_seed, "Seed", int),
+            residual_correlation=num(self.var_rho, "Lot correlation", float),
+            include_residual=bool(self.var_resid.get()),
+            cost_basis=self.var_basis.get(),
+            dollar_year=year,
+            program=self.var_program.get().strip() or "unnamed program",
+            simulate=True,
+        )
+
+    def _compute_risk(self):
+        """Collect the grids and run the risk analysis. Returns a RiskResult."""
+        analogy_df = self._collect_analogy()
+        estimate_df = self._collect_estimate()
+        cfg = SETTINGS.copy()
+        cfg.update(self._collect_overrides())
+
+        cf_raw = estimate_df["Complexity"].to_numpy(dtype=float)
+        last = cfg["DefaultCF"]
+        cf = []
+        for v in cf_raw:
+            if pd.isna(v) or v <= 0:
+                cf.append(last)
+            else:
+                last = float(v)
+                cf.append(last)
+
+        return risk.run_risk(
+            analogy_df["Qty"].to_numpy(dtype=float),
+            analogy_df["AUC ($K)"].to_numpy(dtype=float),
+            estimate_df["Qty"].to_numpy(dtype=int),
+            cf,
+            cfg,
+            self._risk_options(),
+        )
+
+    def run_risk(self):
+        if risk is None or not risk.AVAILABLE:
+            messagebox.showinfo("Risk analysis unavailable", risk.INSTALL_HINT)
+            return
+        self.var_risk_status.set("Running...")
+        self.update_idletasks()
+        try:
+            self.risk_result = self._compute_risk()
+            self._show_risk(self.risk_result)
+            self.var_risk_status.set(
+                f"Ran {self.risk_result.n_iter:,} iterations."
+                if self.risk_result.n_iter
+                else "Intervals computed."
+            )
+            self.nb.select(self.tab_risk)
+        except (ValueError, RuntimeError) as exc:
+            messagebox.showerror("Risk analysis", str(exc))
+            self.var_risk_status.set("Did not run.")
+        except Exception as exc:
+            messagebox.showerror(
+                "Risk analysis failed",
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"{traceback.format_exc(limit=3)}",
+            )
+            self.var_risk_status.set("Failed.")
+
+    def _show_risk(self, res):
+        self.tree_risk.delete(*self.tree_risk.get_children())
+        for _, row in risk.summary_frame(res).iterrows():
+            self.tree_risk.insert(
+                "", "end", values=(str(row["Item"]), str(row["Value"]))
+            )
+        self.tree_iv.delete(*self.tree_iv.get_children())
+        for _, r in res.intervals.iterrows():
+            self.tree_iv.insert(
+                "",
+                "end",
+                values=(
+                    int(r["Lot"]),
+                    int(r["Lot Quantity"]),
+                    int(r["First Unit in Lot"]),
+                    int(r["Last Unit in Lot"]),
+                    f"{r['Complexity Factor']:.4g}",
+                    f"{r['Unit Cost ($K)']:,.2f}",
+                    f"{r['Unit Cost Low ($K)']:,.2f}",
+                    f"{r['Unit Cost High ($K)']:,.2f}",
+                    f"{r['Lot Cost ($)']:,.2f}",
+                ),
+            )
+
     def _build_actionbar(self):
         bar = ttk.Frame(self)
         bar.pack(fill="x", padx=12, pady=10)
@@ -2141,11 +2441,15 @@ class LotCostApp(tk.Tk):
             "ToolMatchProjection": bool(self.var_toolmatch.get()),
         }
 
-    def _save_workbook(self, path, proj, summ, chart) -> str | None:
+    def _save_workbook(
+        self, path, proj, summ, chart, risk_summ=None, risk_iv=None
+    ) -> str | None:
         """Save, re-prompting if the path is locked or not writable."""
         while True:
             try:
-                save_complete_excel_workbook(path, proj, summ, chart)
+                save_complete_excel_workbook(
+                    path, proj, summ, chart, risk_summ, risk_iv
+                )
                 return path
             except PermissionError:
                 retry = messagebox.askretrycancel(
@@ -2195,13 +2499,40 @@ class LotCostApp(tk.Tk):
             summary_df = generate_analyst_summary(models_ctx, run_info)
             chart_df = generate_fit_chart_data(models_ctx)
 
+            risk_summary = risk_intervals = None
+            if (
+                risk is not None
+                and risk.AVAILABLE
+                and bool(self.var_do_risk.get())
+            ):
+                try:
+                    self.risk_result = self._compute_risk()
+                    self._show_risk(self.risk_result)
+                    risk_summary = risk.summary_frame(self.risk_result)
+                    risk_intervals = self.risk_result.intervals
+                    self.var_risk_status.set(
+                        f"Ran {self.risk_result.n_iter:,} iterations."
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    # A risk failure must not cost the analyst the main run.
+                    self.var_risk_status.set("Did not run.")
+                    messagebox.showwarning(
+                        "Risk analysis skipped",
+                        f"{exc}\n\nThe rest of the model ran normally.",
+                    )
+
             path = self.var_outfile.get().strip()
             if not path:
                 raise ValueError("Choose an output file first.")
             if not path.lower().endswith(".xlsx"):
                 path += ".xlsx"
             saved = self._save_workbook(
-                path, projections_df, summary_df, chart_df
+                path,
+                projections_df,
+                summary_df,
+                chart_df,
+                risk_summary,
+                risk_intervals,
             )
 
             self._show_results(summary_df)
