@@ -2014,6 +2014,13 @@ try:
 except Exception:  # pragma: no cover - depends on the install
     risk = None
 
+# The WBS roll-up. Its own risk half needs cost_core, but the deterministic
+# roll-up does not, so this stays useful either way.
+try:
+    import wbs
+except Exception:  # pragma: no cover - depends on the install
+    wbs = None
+
 # Demo data for the "Load Example" buttons. These numbers are invented,
 # generated from an 88% learning curve with a 93% rate slope on a $1,200K
 # first unit, plus a little scatter.
@@ -2197,7 +2204,10 @@ class LotGrid(ttk.Frame):
 #: Marker and schema version for a saved run. The version is bumped only when
 #: an older file can no longer be read as written.
 RUN_FORMAT = "lot-cost-model-run"
-RUN_FORMAT_VERSION = 1
+#: 2 added the WBS elements list. A version 1 file still loads, as a single
+#: element. Bumping means an older build refuses a version 2 file outright
+#: rather than opening it and silently keeping only one of its elements.
+RUN_FORMAT_VERSION = 2
 RUN_SUFFIX = ".lotrun.json"
 
 
@@ -2264,6 +2274,15 @@ class LotCostApp(tk.Tk):
             style="Sub.TLabel",
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
+        # One entry per WBS element: its own analogy history and its own
+        # share of the buy. Tabs 1 to 5 always show the selected element;
+        # tab 6 is the whole programme.
+        self.elements: list[dict] = []
+        self.current_element = 0
+        self._switching = False
+
+        self._build_element_bar()
+
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=12)
         self.tab_analogy = ttk.Frame(nb)
@@ -2271,14 +2290,17 @@ class LotCostApp(tk.Tk):
         self.tab_run = ttk.Frame(nb)
         self.tab_results = ttk.Frame(nb)
         self.tab_risk = ttk.Frame(nb)
+        self.tab_program = ttk.Frame(nb)
         nb.add(self.tab_analogy, text="  1. Analogy Lots  ")
         nb.add(self.tab_estimate, text="  2. Estimate Lots  ")
         nb.add(self.tab_run, text="  3. Run Info & Settings  ")
         nb.add(self.tab_results, text="  4. Results  ")
         nb.add(self.tab_risk, text="  5. Risk & Intervals  ")
+        nb.add(self.tab_program, text="  6. Program Roll-up  ")
         self.nb = nb
 
         self.risk_result = None
+        self.program_result = None
 
         self.run_path: str | None = None
 
@@ -2287,8 +2309,14 @@ class LotCostApp(tk.Tk):
         self._build_runinfo()
         self._build_results()
         self._build_risk()
+        self._build_program()
         self._build_actionbar()
         self._build_menu()
+
+        # Start with a single unnamed element, so a one-element estimate
+        # behaves exactly as it did before any of this existed.
+        self.elements = [self._blank_element("Element 1")]
+        self._refresh_element_list()
 
     # -- tabs ---------------------------------------------------------------
     def _build_analogy(self):
@@ -2474,6 +2502,453 @@ class LotCostApp(tk.Tk):
         self.tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.tree.tag_configure("sel", background="#dff0d8")
 
+    # -- program roll-up ----------------------------------------------------
+    def _build_program(self):
+        f = self.tab_program
+        if wbs is None:
+            ttk.Label(
+                f,
+                text=(
+                    "Program roll-up unavailable: wbs.py is not next to this "
+                    "script."
+                ),
+                style="Sub.TLabel",
+            ).pack(anchor="w", padx=12, pady=14)
+            self.tree_prog_elements = None
+            self.tree_prog_summary = None
+            return
+
+        ttk.Label(
+            f,
+            text=(
+                "Every element priced on its own curve, then added up. The "
+                "cost before risk stands on its own:\n"
+                "risk is optional, reported separately, and never folded into "
+                "the estimate above it."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=8, pady=(8, 4))
+
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", padx=8, pady=4)
+        ttk.Button(
+            bar, text="Run Program Roll-up", command=self.run_program
+        ).pack(side="left")
+        self.var_prog_risk = tk.BooleanVar(value=bool(wbs.RISK_AVAILABLE))
+        ttk.Checkbutton(
+            bar,
+            text="Also apply risk (correlated Monte Carlo)",
+            variable=self.var_prog_risk,
+            state="normal" if wbs.RISK_AVAILABLE else "disabled",
+        ).pack(side="left", padx=10)
+        ttk.Label(bar, text="Correlation:").pack(side="left", padx=(10, 2))
+        self.var_prog_rho = tk.StringVar(
+            value=f"{wbs.DEFAULT_CORRELATION:.2f}"
+        )
+        ttk.Entry(bar, textvariable=self.var_prog_rho, width=6).pack(
+            side="left"
+        )
+        self.var_prog_status = tk.StringVar(value="Not run yet.")
+        ttk.Label(
+            bar, textvariable=self.var_prog_status, style="Sub.TLabel"
+        ).pack(side="left", padx=12)
+
+        panes = ttk.Panedwindow(f, orient="vertical")
+        panes.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        top = ttk.Frame(panes)
+        cols = (
+            "WBS Element", "Model", "Lots", "T1 ($K)", "Units",
+            "Cost Before Risk ($)", "Share", "P80 With Risk ($)",
+        )
+        self.tree_prog_elements = ttk.Treeview(
+            top, columns=cols, show="headings", height=8
+        )
+        for c, w in zip(cols, (190, 80, 50, 90, 70, 160, 70, 150)):
+            self.tree_prog_elements.heading(c, text=c)
+            self.tree_prog_elements.column(
+                c, width=w, anchor="w" if c == "WBS Element" else "e"
+            )
+        sv = ttk.Scrollbar(
+            top, orient="vertical", command=self.tree_prog_elements.yview
+        )
+        self.tree_prog_elements.configure(yscrollcommand=sv.set)
+        sv.pack(side="right", fill="y")
+        self.tree_prog_elements.pack(fill="both", expand=True)
+        self.tree_prog_elements.tag_configure(
+            "total", background="#dff0d8", font=("Segoe UI", 9, "bold")
+        )
+        panes.add(top, weight=2)
+
+        bot = ttk.Frame(panes)
+        self.tree_prog_summary = ttk.Treeview(
+            bot, columns=("Item", "Value"), show="headings", height=10
+        )
+        self.tree_prog_summary.heading("Item", text="Item")
+        self.tree_prog_summary.heading("Value", text="Value")
+        self.tree_prog_summary.column("Item", width=280, anchor="w")
+        self.tree_prog_summary.column("Value", width=640, anchor="w")
+        sv2 = ttk.Scrollbar(
+            bot, orient="vertical", command=self.tree_prog_summary.yview
+        )
+        self.tree_prog_summary.configure(yscrollcommand=sv2.set)
+        sv2.pack(side="right", fill="y")
+        self.tree_prog_summary.pack(fill="both", expand=True)
+        self.tree_prog_summary.tag_configure(
+            "head", font=("Segoe UI", 9, "bold")
+        )
+        panes.add(bot, weight=3)
+
+    def build_program(self):
+        """Assemble the programme from what is entered, without pricing it."""
+        self._capture_element()
+        elements = []
+        schedule = []
+        for el in self.elements:
+            analogy_rows = [r for r in el["analogy"] if any(r)]
+            estimate_rows = [r for r in el["estimate"] if any(r)]
+            if not analogy_rows:
+                raise ValueError(
+                    f"{el['name']} has no analogy lots. Every element needs "
+                    "its own history to fit a curve to."
+                )
+            if not estimate_rows:
+                raise ValueError(f"{el['name']} has no forecast lots.")
+
+            analogy = self._analogy_frame(analogy_rows, el["name"])
+            years, qty, cf = self._estimate_columns(estimate_rows, el["name"])
+            if not schedule:
+                schedule = years
+            elif len(years) != len(schedule):
+                raise ValueError(
+                    f"{el['name']} has {len(years)} forecast lots but "
+                    f"{self.elements[0]['name']} has {len(schedule)}. Every "
+                    "element is priced against one shared schedule, so a lot "
+                    "an element sits out is a quantity of zero rather than a "
+                    "missing row."
+                )
+            elements.append(
+                wbs.Element(
+                    name=el["name"],
+                    analogy=analogy,
+                    quantities=qty,
+                    complexity=cf,
+                )
+            )
+        return wbs.Program(
+            name=self.var_program.get().strip() or "unnamed program",
+            fiscal_years=schedule,
+            elements=elements,
+        )
+
+    def _analogy_frame(self, rows, who):
+        fy, qty, auc = [], [], []
+        for i, r in enumerate(rows, start=1):
+            try:
+                q = parse_float(r[1])
+            except (ValueError, IndexError):
+                raise ValueError(
+                    f"{who}, analogy row {i}: quantity {r[1]!r} is not a "
+                    "number."
+                )
+            if q <= 0:
+                raise ValueError(
+                    f"{who}, analogy row {i}: quantity must be above zero."
+                )
+            fy.append(parse_float(r[0]) if r[0] else np.nan)
+            qty.append(q)
+            auc.append(parse_float(r[2]) if len(r) > 2 and r[2] else np.nan)
+        return pd.DataFrame(
+            {
+                "Lot": range(1, len(rows) + 1),
+                "Lot FY": fy,
+                "Qty": qty,
+                "AUC ($K)": auc,
+            }
+        )
+
+    def _estimate_columns(self, rows, who):
+        years, qty, cf = [], [], []
+        try:
+            last = float(self.var_defaultcf.get() or 1.0)
+        except ValueError:
+            last = 1.0
+        for i, r in enumerate(rows, start=1):
+            try:
+                years.append(int(parse_float(r[0])))
+            except (ValueError, IndexError):
+                raise ValueError(
+                    f"{who}, forecast row {i}: fiscal year {r[0]!r} is not a "
+                    "number. Every lot needs one, because the schedule is "
+                    "shared across elements."
+                )
+            # A blank quantity means this element is not bought in that lot.
+            raw = r[1] if len(r) > 1 else ""
+            try:
+                q = parse_float(raw) if raw else 0.0
+            except ValueError:
+                raise ValueError(
+                    f"{who}, forecast row {i}: quantity {raw!r} is not a "
+                    "number."
+                )
+            qty.append(q)
+            raw_cf = r[2] if len(r) > 2 else ""
+            if raw_cf:
+                last = parse_float(raw_cf)
+            cf.append(last)
+        return years, qty, cf
+
+    def run_program(self):
+        """Price every element and roll them up."""
+        if wbs is None:
+            return
+        self.var_prog_status.set("Running...")
+        self.update_idletasks()
+        try:
+            program = self.build_program()
+            try:
+                rho = float(self.var_prog_rho.get())
+            except ValueError:
+                raise ValueError("Correlation must be a number between 0 and 1.")
+
+            result = wbs.roll_up(
+                program,
+                self._collect_overrides(),
+                simulate=bool(self.var_prog_risk.get()),
+                correlation=rho,
+                n_iter=int(self.var_iters.get() or 20000)
+                if hasattr(self, "var_iters") else 20000,
+                seed=int(self.var_seed.get() or 11)
+                if hasattr(self, "var_seed") else 11,
+            )
+        except (ValueError, wbs.ProgramError) as exc:
+            messagebox.showerror("Program roll-up", str(exc))
+            self.var_prog_status.set("Did not run.")
+            return
+        except Exception as exc:
+            messagebox.showerror(
+                "Program roll-up failed",
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"{traceback.format_exc(limit=3)}",
+            )
+            self.var_prog_status.set("Failed.")
+            return
+
+        self.program_result = result
+        self._show_program(result)
+        self.nb.select(self.tab_program)
+        self.var_prog_status.set(
+            f"{len(result.elements)} element(s). Total before risk "
+            f"{result.total:,.2f}."
+        )
+        self._save_program_workbook(result)
+
+    def _show_program(self, result):
+        table = wbs.element_summary(result)
+        self.tree_prog_elements.delete(
+            *self.tree_prog_elements.get_children()
+        )
+
+        def cell(row, name, fmt="{:,.2f}"):
+            if name not in row.index or row[name] == "" or pd.isna(row[name]):
+                return ""
+            try:
+                return fmt.format(float(row[name]))
+            except (TypeError, ValueError):
+                return str(row[name])
+
+        for _, r in table.iterrows():
+            is_total = r["WBS Element"] == "PROGRAM TOTAL"
+            self.tree_prog_elements.insert(
+                "",
+                "end",
+                values=(
+                    r["WBS Element"],
+                    r["Model"],
+                    cell(r, "Analogy lots", "{:.0f}"),
+                    cell(r, "T1 ($K)"),
+                    cell(r, "Units bought", "{:.0f}"),
+                    cell(r, "Cost Before Risk ($)"),
+                    cell(r, "Share of Program", "{:.1%}"),
+                    cell(r, "P80 With Risk ($)"),
+                ),
+                tags=("total",) if is_total else (),
+            )
+
+        self.tree_prog_summary.delete(*self.tree_prog_summary.get_children())
+        for _, r in wbs.program_summary(result).iterrows():
+            item = str(r["Item"])
+            self.tree_prog_summary.insert(
+                "",
+                "end",
+                values=(item, str(r["Value"])),
+                tags=("head",) if item.startswith("---") else (),
+            )
+
+    def _save_program_workbook(self, result):
+        path = self.var_outfile.get().strip()
+        if not path:
+            return
+        base, ext = os.path.splitext(path)
+        target = f"{base}_program{ext or '.xlsx'}"
+        while True:
+            try:
+                wbs.save_program_workbook(target, result)
+                break
+            except PermissionError:
+                if not messagebox.askretrycancel(
+                    "Cannot write the program workbook",
+                    f"Could not write to:\n{target}\n\n"
+                    "The file may be open in Excel.",
+                ):
+                    return
+            except Exception as exc:
+                messagebox.showwarning(
+                    "Program workbook not saved",
+                    f"The roll-up is on screen, but the workbook could not "
+                    f"be written.\n\n{type(exc).__name__}: {exc}",
+                )
+                return
+        self.var_prog_status.set(
+            self.var_prog_status.get() + f"  Saved: {target}"
+        )
+
+    # -- WBS elements -------------------------------------------------------
+    def _build_element_bar(self):
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=12, pady=(0, 6))
+        ttk.Label(bar, text="WBS element:").pack(side="left")
+        self.var_element = tk.StringVar()
+        self.cmb_element = ttk.Combobox(
+            bar, textvariable=self.var_element, state="readonly", width=34
+        )
+        self.cmb_element.pack(side="left", padx=6)
+        self.cmb_element.bind("<<ComboboxSelected>>", self._on_element_change)
+        ttk.Button(bar, text="Add", width=6,
+                   command=self.add_element).pack(side="left")
+        ttk.Button(bar, text="Rename", width=8,
+                   command=self.rename_element).pack(side="left", padx=4)
+        ttk.Button(bar, text="Remove", width=8,
+                   command=self.remove_element).pack(side="left")
+        self.var_element_hint = tk.StringVar(value="")
+        ttk.Label(
+            bar, textvariable=self.var_element_hint, style="Sub.TLabel"
+        ).pack(side="left", padx=12)
+
+    def _blank_element(self, name: str) -> dict:
+        return {"name": name, "analogy": [], "estimate": []}
+
+    def _capture_element(self):
+        """Copy what is on screen into the element it belongs to."""
+        if self._switching or not self.elements:
+            return
+        el = self.elements[self.current_element]
+        el["analogy"] = self.grid_analogy.get_rows()
+        el["estimate"] = self.grid_estimate.get_rows()
+
+    def _show_element(self, index: int):
+        self._switching = True
+        try:
+            el = self.elements[index]
+            self.grid_analogy.load(
+                [tuple(r) for r in el["analogy"]] or [("", "", "")]
+            )
+            self.grid_estimate.load(
+                [tuple(r) for r in el["estimate"]] or [("", "", "")]
+            )
+            self.current_element = index
+            self.var_element.set(el["name"])
+        finally:
+            self._switching = False
+
+    def _refresh_element_list(self, select: int | None = None):
+        names = [e["name"] for e in self.elements]
+        self.cmb_element["values"] = names
+        index = self.current_element if select is None else select
+        index = max(0, min(index, len(self.elements) - 1))
+        self._show_element(index)
+        self.var_element_hint.set(
+            "one element; tab 6 rolls up the program"
+            if len(self.elements) == 1
+            else f"{len(self.elements)} elements; tab 6 rolls them up"
+        )
+
+    def _on_element_change(self, _event=None):
+        target = self.var_element.get()
+        for i, el in enumerate(self.elements):
+            if el["name"] == target and i != self.current_element:
+                self._capture_element()
+                self._refresh_element_list(i)
+                self.var_status.set(f"Editing {target}.")
+                return
+
+    def _unique_element_name(self, base: str) -> str:
+        names = {e["name"] for e in self.elements}
+        if base not in names:
+            return base
+        n = 2
+        while f"{base} ({n})" in names:
+            n += 1
+        return f"{base} ({n})"
+
+    def add_element(self):
+        name = self._ask_name("Add a WBS element", "Element name:")
+        if not name:
+            return
+        self._capture_element()
+        fresh = self._blank_element(self._unique_element_name(name))
+        # Carry the buy schedule across with no quantities, so the fiscal
+        # years stay in step and only the counts have to be filled in.
+        current = self.elements[self.current_element]["estimate"]
+        fresh["estimate"] = [[row[0], "", ""] for row in current]
+        self.elements.append(fresh)
+        self._refresh_element_list(len(self.elements) - 1)
+        self.nb.select(self.tab_analogy)
+        self.var_status.set(
+            f"Added {fresh['name']}. Enter its analogy lots and its "
+            "quantity for each lot."
+        )
+
+    def rename_element(self):
+        if not self.elements:
+            return
+        current = self.elements[self.current_element]["name"]
+        name = self._ask_name("Rename element", "New name:", current)
+        if not name or name == current:
+            return
+        self.elements[self.current_element]["name"] = (
+            self._unique_element_name(name)
+        )
+        self._capture_element()
+        self._refresh_element_list(self.current_element)
+
+    def remove_element(self):
+        if len(self.elements) <= 1:
+            messagebox.showinfo(
+                "Cannot remove",
+                "A program needs at least one element. Rename this one or "
+                "clear its lots instead.",
+            )
+            return
+        name = self.elements[self.current_element]["name"]
+        if not messagebox.askyesno(
+            "Remove element",
+            f"Remove {name} and everything entered for it?",
+        ):
+            return
+        self.elements.pop(self.current_element)
+        self._refresh_element_list(max(0, self.current_element - 1))
+        self.var_status.set(f"Removed {name}.")
+
+    def _ask_name(self, title: str, prompt: str, initial: str = "") -> str:
+        from tkinter import simpledialog
+
+        value = simpledialog.askstring(
+            title, prompt, initialvalue=initial, parent=self
+        )
+        return (value or "").strip()
+
     # -- saving and reloading a run -----------------------------------------
     def _build_menu(self):
         bar = tk.Menu(self)
@@ -2494,6 +2969,7 @@ class LotCostApp(tk.Tk):
 
     def run_state(self) -> dict:
         """Everything needed to reproduce this run, as plain data."""
+        self._capture_element()
         return {
             "format": RUN_FORMAT,
             "format_version": RUN_FORMAT_VERSION,
@@ -2510,18 +2986,50 @@ class LotCostApp(tk.Tk):
             }
             if hasattr(self, "var_level")
             else {},
+            # Kept for a reader expecting one element: the selected one.
             "analogy_lots": self.grid_analogy.get_rows(),
             "estimate_lots": self.grid_estimate.get_rows(),
+            "elements": [
+                {
+                    "name": el["name"],
+                    "analogy_lots": el["analogy"],
+                    "estimate_lots": el["estimate"],
+                }
+                for el in self.elements
+            ],
+            "selected_element": self.current_element,
             "output_path": self.var_outfile.get().strip(),
         }
 
     def apply_run_state(self, data: dict):
-        """Populate the window from a saved run."""
-        self.grid_analogy.load(
-            [tuple(r) for r in data.get("analogy_lots", [])] or [("", "", "")]
-        )
-        self.grid_estimate.load(
-            [tuple(r) for r in data.get("estimate_lots", [])] or [("", "", "")]
+        """Populate the window from a saved run.
+
+        A file written before elements existed carries one set of lots, which
+        loads as a single element rather than being rejected.
+        """
+        saved = data.get("elements")
+        if saved:
+            self.elements = [
+                {
+                    "name": e.get("name") or f"Element {i + 1}",
+                    "analogy": [list(r) for r in e.get("analogy_lots", [])],
+                    "estimate": [list(r) for r in e.get("estimate_lots", [])],
+                }
+                for i, e in enumerate(saved)
+            ]
+        else:
+            self.elements = [
+                {
+                    "name": "Element 1",
+                    "analogy": [list(r) for r in data.get("analogy_lots", [])],
+                    "estimate": [
+                        list(r) for r in data.get("estimate_lots", [])
+                    ],
+                }
+            ]
+        self.current_element = 0
+        self._refresh_element_list(
+            int(data.get("selected_element", 0) or 0)
         )
 
         info = data.get("run_info", {})
@@ -2647,8 +3155,12 @@ class LotCostApp(tk.Tk):
     def load_example(self):
         self.grid_analogy.load(EXAMPLE_ANALOGY)
         self.grid_estimate.load(EXAMPLE_ESTIMATE)
+        self._capture_element()
         self.nb.select(self.tab_analogy)
-        self.var_status.set("Example data loaded.")
+        self.var_status.set(
+            "Example data loaded into "
+            f"{self.elements[self.current_element]['name']}."
+        )
 
     def _build_risk(self):
         f = self.tab_risk

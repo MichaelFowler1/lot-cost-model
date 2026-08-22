@@ -108,7 +108,7 @@ class TestRollUpArithmetic:
     def test_element_share_sums_to_one(self, rolled):
         table = wbs.element_summary(rolled)
         shares = table.loc[
-            table["WBS Element"] != "PROGRAM TOTAL", "Share of program"
+            table["WBS Element"] != "PROGRAM TOTAL", "Share of Program"
         ]
         assert shares.sum() == pytest.approx(1.0, abs=1e-3)
 
@@ -304,7 +304,7 @@ class TestSummaries:
     def test_element_summary_ends_with_the_program_total(self, simulated):
         table = wbs.element_summary(simulated)
         assert table.iloc[-1]["WBS Element"] == "PROGRAM TOTAL"
-        assert table.iloc[-1]["Element Total ($)"] == pytest.approx(
+        assert table.iloc[-1]["Cost Before Risk ($)"] == pytest.approx(
             round(simulated.total, 2)
         )
 
@@ -357,3 +357,45 @@ class TestDistributionHandoff:
     def test_the_approximation_is_disclosed(self, simulated):
         text = " ".join(simulated.notes)
         assert "lognormal" in text and "half a percent" in text
+
+
+class TestManyElements:
+    """No coded ceiling, but the practical limits are worth pinning."""
+
+    def test_sheet_names_stay_unique_when_the_first_31_chars_match(self):
+        # Excel truncates at 31, which is short enough for two real WBS
+        # names to collide and for one element's sheet to be lost.
+        taken = set()
+        names = [
+            "1.1 Air Vehicle Structural Assembly Group A",
+            "1.1 Air Vehicle Structural Assembly Group B",
+            "1.1 Air Vehicle Structural Assembly Group C",
+        ]
+        made = [wbs._sheet_name(n, taken) for n in names]
+        assert len(set(made)) == len(names)
+        assert all(len(m) <= 31 for m in made)
+
+    def test_sheet_names_avoid_the_program_sheets(self):
+        taken = {"Program_Summary", "Program_By_Lot"}
+        assert wbs._sheet_name("Program_Summary", taken) != "Program_Summary"
+
+    def test_illegal_characters_are_stripped(self):
+        assert "/" not in wbs._sheet_name("1.1 Air/Ground [x]", set())
+        assert "[" not in wbs._sheet_name("1.1 Air/Ground [x]", set())
+
+    def test_a_dozen_elements_roll_up_and_reconcile(self):
+        many = []
+        for i in range(12):
+            el = airframe()
+            el.name = f"1.{i + 1} Element {i + 1}"
+            # Vary the buy so they are not all the same number.
+            el.quantities = [q + i for q in AIRCRAFT]
+            many.append(el)
+        rolled = wbs.roll_up(program(*many), simulate=False)
+        assert len(rolled.elements) == 12
+        assert rolled.total == pytest.approx(
+            sum(e.total for e in rolled.elements), rel=1e-9
+        )
+        assert rolled.by_lot["Program Total ($)"].sum() == pytest.approx(
+            rolled.total, rel=1e-6
+        )

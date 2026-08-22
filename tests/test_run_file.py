@@ -209,6 +209,23 @@ class TestRoundTrip:
         app.apply_run_state(state)
         assert app.grid_analogy.get_rows() == [list(r) for r in lots]
 
+    def test_a_version_one_file_loads_as_a_single_element(self, app):
+        # Written before elements existed. It must open rather than be
+        # refused, and become one element.
+        legacy = {
+            "format": M.RUN_FORMAT,
+            "format_version": 1,
+            "analogy_lots": [list(r) for r in M.EXAMPLE_ANALOGY],
+            "estimate_lots": [list(r) for r in M.EXAMPLE_ESTIMATE],
+            "run_info": {"Program": "LEGACY"},
+        }
+        wipe(app)
+        app.apply_run_state(legacy)
+        assert len(app.elements) == 1
+        assert app.grid_analogy.get_rows() == [
+            list(r) for r in M.EXAMPLE_ANALOGY
+        ]
+
     def test_the_saved_file_is_self_describing(self, app):
         app.grid_analogy.load(M.EXAMPLE_ANALOGY)
         app.grid_estimate.load(M.EXAMPLE_ESTIMATE)
@@ -236,3 +253,101 @@ class TestRoundTrip:
 
         assert app.var_legacy_rate.get() is True
         assert warned, "reloading a legacy run must say so"
+
+
+class TestElementManagement:
+    """Tabs 1 to 5 always show one element; the window holds several."""
+
+    def test_starts_with_a_single_element(self, app):
+        wipe(app)
+        assert len(app.elements) >= 1
+
+    def test_switching_elements_keeps_each_ones_lots(self, app):
+        wipe(app)
+        app.elements = [app._blank_element("A")]
+        app._refresh_element_list(0)
+
+        app.grid_analogy.load([("2015", "5", "857.91")])
+        app.grid_estimate.load([("2028", "12", "1.0")])
+        app._capture_element()
+
+        app.elements.append(app._blank_element("B"))
+        app._refresh_element_list(1)
+        app.grid_analogy.load([("2016", "9", "645.57")])
+        app.grid_estimate.load([("2028", "20", "1.0")])
+        app._capture_element()
+
+        # Back to A: its own lots, not B's.
+        app._refresh_element_list(0)
+        assert app.grid_analogy.get_rows() == [["2015", "5", "857.91"]]
+        app._refresh_element_list(1)
+        assert app.grid_analogy.get_rows() == [["2016", "9", "645.57"]]
+
+    def test_a_new_element_inherits_the_schedule_but_no_quantities(
+        self, app, monkeypatch
+    ):
+        wipe(app)
+        app.elements = [app._blank_element("A")]
+        app._refresh_element_list(0)
+        app.grid_estimate.load(
+            [("2028", "12", "1.15"), ("2029", "20", "1.15")]
+        )
+        app._capture_element()
+
+        monkeypatch.setattr(app, "_ask_name", lambda *a, **k: "Propulsion")
+        app.add_element()
+
+        rows = app.grid_estimate.get_rows()
+        assert [r[0] for r in rows] == ["2028", "2029"]
+        assert all(r[1] == "" for r in rows), (
+            "a new element should start with the years but no counts"
+        )
+
+    def test_duplicate_names_are_made_unique(self, app, monkeypatch):
+        wipe(app)
+        app.elements = [app._blank_element("Airframe")]
+        app._refresh_element_list(0)
+        monkeypatch.setattr(app, "_ask_name", lambda *a, **k: "Airframe")
+        app.add_element()
+        assert len({e["name"] for e in app.elements}) == len(app.elements)
+
+    def test_the_last_element_cannot_be_removed(self, app, monkeypatch):
+        wipe(app)
+        app.elements = [app._blank_element("Only")]
+        app._refresh_element_list(0)
+        told = []
+        monkeypatch.setattr(
+            M.messagebox, "showinfo", lambda t, m: told.append(t)
+        )
+        app.remove_element()
+        assert len(app.elements) == 1
+        assert told
+
+    def test_every_element_survives_the_round_trip(self, app, monkeypatch):
+        wipe(app)
+        app.elements = [
+            {
+                "name": "1.1 Airframe",
+                "analogy": [["2015", "5", "857.91"], ["2016", "9", "645.57"]],
+                "estimate": [["2028", "12", "1.15"]],
+            },
+            {
+                "name": "1.2 Propulsion",
+                "analogy": [["2015", "12", "402.10"]],
+                "estimate": [["2028", "26", "1.0"]],
+            },
+        ]
+        app._refresh_element_list(0)
+
+        state = app.run_state()
+        assert len(state["elements"]) == 2
+
+        wipe(app)
+        app.elements = [app._blank_element("wiped")]
+        app._refresh_element_list(0)
+        app.apply_run_state(state)
+
+        assert [e["name"] for e in app.elements] == [
+            "1.1 Airframe", "1.2 Propulsion"
+        ]
+        assert app.elements[1]["analogy"] == [["2015", "12", "402.10"]]

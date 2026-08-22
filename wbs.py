@@ -423,11 +423,13 @@ def element_summary(result: ProgramResult) -> pd.DataFrame:
                 f"{r.model} T1 First Unit Cost ($K)"
             ].iloc[0],
             "Units bought": int(np.sum(r.projections["Lot Quantity"])),
-            "Element Total ($)": round(r.total, 2),
-            "Share of program": round(share, 4),
+            "Cost Before Risk ($)": round(r.total, 2),
+            "Share of Program": round(share, 4),
         }
         if r.totals is not None:
-            row["Element P80 ($)"] = round(float(np.percentile(r.totals, 80)), 2)
+            row["P80 With Risk ($)"] = round(
+                float(np.percentile(r.totals, 80)), 2
+            )
         rows.append(row)
 
     total_row = {
@@ -436,11 +438,13 @@ def element_summary(result: ProgramResult) -> pd.DataFrame:
         "Analogy lots": "",
         "T1 ($K)": "",
         "Units bought": "",
-        "Element Total ($)": round(result.total, 2),
-        "Share of program": 1.0,
+        "Cost Before Risk ($)": round(result.total, 2),
+        "Share of Program": 1.0,
     }
     if result.p80 is not None:
-        total_row["Element P80 ($)"] = round(result.p80, 2)
+        # Not the sum of the element P80s, and deliberately so: they do not
+        # all peak together. See the correlated roll-up.
+        total_row["P80 With Risk ($)"] = round(result.p80, 2)
     rows.append(total_row)
     return pd.DataFrame(rows)
 
@@ -454,18 +458,33 @@ def program_summary(result: ProgramResult) -> pd.DataFrame:
         ("Program", result.program),
         ("WBS elements", str(len(result.elements))),
         ("Lots", str(len(result.by_lot))),
-        ("Program total, point estimate ($)", money(result.total)),
+        ("", ""),
+        ("--- BEFORE RISK ---", "deterministic estimate, no risk applied"),
+        ("Program total before risk ($)", money(result.total)),
     ]
-    if result.p50 is not None:
+    for r in result.elements:
+        rows.append((f"    {r.name} ({r.model})", money(r.total)))
+
+    if result.p50 is None:
         rows += [
             ("", ""),
+            ("Risk analysis", "not run"),
+        ]
+    else:
+        rows += [
+            ("", ""),
+            ("--- WITH RISK ---", "correlated Monte Carlo over the elements"),
             ("Element correlation", f"{result.correlation:.2f}"),
             ("Monte Carlo iterations", f"{result.n_iter:,}"),
             ("Program P50 ($)", money(result.p50)),
             ("Program P80 ($)", money(result.p80)),
             ("Program P90 ($)", money(result.p90)),
             ("Program CV", f"{result.cv:.4f}"),
-            ("Reserve to P80 ($)", money(result.p80 - result.total)),
+            (
+                "Reserve to P80 ($)",
+                money(result.p80 - result.total)
+                + "  (the amount risk adds to the estimate above)",
+            ),
             (
                 "Point estimate falls at",
                 f"P{result.point_percentile:.0f} of the simulated program",
@@ -523,9 +542,13 @@ def save_program_workbook(filename: str, result: ProgramResult):
             result.scurve.to_excel(
                 writer, sheet_name="Program_SCurve", index=False
             )
+        used = {
+            "Program_Summary", "Program_Elements", "Program_By_Lot",
+            "Program_SCurve",
+        }
         for r in result.elements:
             r.projections.to_excel(
-                writer, sheet_name=_sheet_name(r.name), index=False
+                writer, sheet_name=_sheet_name(r.name, used), index=False
             )
 
     wb = openpyxl.load_workbook(filename)
@@ -574,10 +597,31 @@ def _col_letter(idx: int) -> str:
     return get_column_letter(idx)
 
 
-def _sheet_name(name: str) -> str:
-    """Excel refuses several characters and anything over 31 chars."""
-    cleaned = "".join(c for c in name if c not in r"[]:*?/\\")
-    return (cleaned[:31] or "Element").strip()
+def _sheet_name(name: str, taken: set[str] | None = None) -> str:
+    """A legal, unique Excel sheet name for this element.
+
+    Excel refuses several characters and truncates at 31, which is short
+    enough that two real WBS names can collide: "1.1 Air Vehicle Structural
+    Assembly Group A" and "... Group B" share their first 31 characters. Left
+    alone that either errors or drops an element's sheet, so a numeric suffix
+    is added when the truncated name is already spoken for.
+    """
+    cleaned = "".join(c for c in name if c not in r"[]:*?/\\").strip()
+    base = (cleaned[:31] or "Element").strip()
+    if taken is None or base not in taken:
+        if taken is not None:
+            taken.add(base)
+        return base
+    for n in range(2, 100):
+        suffix = f" ({n})"
+        candidate = (cleaned[: 31 - len(suffix)]).strip() + suffix
+        if candidate not in taken:
+            taken.add(candidate)
+            return candidate
+    raise ProgramError(
+        f"Cannot make a unique sheet name for {name!r}; shorten the element "
+        "names so their first 31 characters differ."
+    )
 
 
 def _add_program_scurve(

@@ -108,6 +108,64 @@ and plain spaces all work as separators.
 
 Each grid also has a Load Example button if you just want to see it run.
 
+## Rolling up a WBS
+
+One element is a study. A cost estimate is usually several, so tab 6 adds them
+up.
+
+Each element carries its own analogy history and gets its own curve: the
+airframe learns at one rate, the engines at another, and neither is told about
+the other. What they share is the buy schedule. Fiscal years belong to the
+program, while the quantity per lot belongs to the element, which is what lets
+a kit buy or a spares provision change the count without changing when it is
+bought. An element that sits out a lot has a quantity of zero there rather than
+a missing row.
+
+![Program roll-up](docs/screenshot-program.png)
+
+Use the **WBS element** bar above the tabs to add, rename and switch between
+elements. Tabs 1 to 5 always show the element you have selected; tab 6 is the
+whole program. A new element inherits the fiscal years already entered, with
+the quantities left blank for you to fill in.
+
+There is no coded limit on how many elements you can add. Forty roll up in
+about three seconds including the risk simulation, and each one needs at least
+three analogy lots with a cost, same as a single-element run.
+
+### Cost before risk, on its own
+
+Risk is optional here and is never folded into the estimate above it. The
+roll-up reports the deterministic total first, broken out by element, and the
+risk block sits underneath as a separate section. Untick **Also apply risk**
+and you get the point estimate alone, with the workbook and the on-screen table
+showing exactly the same numbers.
+
+The element table keeps them in separate columns, `Cost Before Risk ($)` and
+`P80 With Risk ($)`, so there is no way to read one for the other.
+
+### Why the risk roll-up is not a column of SUMs
+
+Elements on one program share a workforce, a supply base and a schedule, so
+their overruns arrive together. Adding independent distributions understates
+the variance of the total by `1 + rho(k-1)`, and the error lands on the upper
+tail where the P80 lives. The roll-up correlates the elements at a single
+default of 0.25 and reports what independence would have cost: on the bundled
+three-element demo, 1.21x on the standard deviation and about 16% of the P80
+reserve.
+
+One approximation is disclosed rather than buried. `cost_core`'s WBS model
+takes distributions, not raw draws, so each element's simulated total is
+summarised as a lognormal before being correlated with the others. An element
+total is a sum of correlated lognormal lot costs and is not itself lognormal,
+so no two-parameter fit reproduces it exactly. Log-space matching was picked by
+measuring three candidates against the empirical percentiles: it tracks to
+about half a percent at P80 and beat both arithmetic moment-matching and a
+normal. A test bounds it, and every run says to read the program percentiles at
+that resolution.
+
+Escalation, nonrecurring and level-of-effort elements, and per-element prior
+units are all deliberately absent for now.
+
 ## Saving a run
 
 The Run menu saves everything the window holds to a small JSON file: both sets
@@ -163,6 +221,10 @@ before the rate models will even be attempted.
 | `Risk_Summary` | Fitted parameters, the buy total with its interval, the simulated percentiles, and the assumptions behind them |
 | `Risk_Intervals` | Row per forecast lot with low and high bounds, and a chart of the band |
 | `Risk_SCurve` | The simulated buy total at every percentile, with the S-curve charted and P50 and P80 marked |
+
+A WBS roll-up writes a second workbook alongside it, suffixed `_program`, with
+`Program_Summary`, `Program_Elements`, `Program_By_Lot` (a stacked cost-by-year
+chart), `Program_SCurve`, and one sheet per element.
 
 The last three appear only when `cost_core` is installed and the risk analysis
 ran.
@@ -238,7 +300,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-102 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+145 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 
