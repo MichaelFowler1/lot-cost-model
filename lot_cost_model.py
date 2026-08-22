@@ -1562,6 +1562,29 @@ def generate_fit_chart_data(
 _COL_CM = 1.72
 
 
+def _nice_bounds(lo: float, hi: float, pad_frac: float = 0.15):
+    """Axis bounds padded off the data and rounded to a readable step.
+
+    Framing an axis on the data is what makes a tight band or a narrow
+    distribution legible, but the raw min and max give labels like 298 and
+    51.43M. Rounding outwards to a round step keeps both.
+    """
+    import math
+
+    span = hi - lo
+    if not math.isfinite(span) or span <= 0:
+        span = abs(hi) or 1.0
+    lo -= span * pad_frac
+    hi += span * pad_frac
+    width = hi - lo
+    step = 10.0 ** math.floor(math.log10(width))
+    for mult in (1, 2, 2.5, 5, 10):
+        if width / (step * mult) <= 8:
+            step *= mult
+            break
+    return math.floor(lo / step) * step, math.ceil(hi / step) * step
+
+
 def _money_short(value: float) -> str:
     """Compact money for a chart label: $250.0M rather than 250,000,000."""
     v = float(value)
@@ -1832,6 +1855,16 @@ def save_complete_excel_workbook(
             11,
         )
 
+        # Excel starts a value axis at zero, which squeezes a tight prediction
+        # band into what looks like one thick line. Frame the axis on the band
+        # itself so its width is actually readable.
+        lo_y, hi_y = _nice_bounds(
+            float(risk_intervals_df["Unit Cost Lower"].min()),
+            float(risk_intervals_df["Unit Cost Upper"].max()),
+        )
+        band.y_axis.scaling.min = max(0.0, lo_y)
+        band.y_axis.scaling.max = hi_y
+
         xs = Reference(
             wsr, min_col=headers[x_name], min_row=2, max_row=last_r
         )
@@ -1902,9 +1935,9 @@ def save_complete_excel_workbook(
         curve.y_axis.scaling.max = 1
         # Zoom to where the distribution actually sits, rather than showing
         # 500M of empty space because Excel starts every axis at zero.
-        pad = max(span * 0.15, 1.0)
-        curve.x_axis.scaling.min = max(0.0, lo_x - pad)
-        curve.x_axis.scaling.max = hi_x + pad
+        nice_lo, nice_hi = _nice_bounds(lo_x, hi_x)
+        curve.x_axis.scaling.min = max(0.0, nice_lo)
+        curve.x_axis.scaling.max = nice_hi
         s = Series(
             values=Reference(wss, min_col=1, min_row=1, max_row=last_s),
             xvalues=Reference(wss, min_col=2, min_row=2, max_row=last_s),
