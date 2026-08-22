@@ -77,8 +77,8 @@ pip install numpy pandas openpyxl
 ```
 
 The interface uses tkinter, which already ships with Python, so there's nothing
-else to install. CI runs the suite on 3.9 and 3.10 as well as 3.11 to 3.13, so
-the floor is checked rather than assumed.
+else to install. CI runs the suite on 3.9 and 3.10 as well as 3.11 to 3.14, so
+both the floor and the ceiling are checked rather than assumed.
 
 ### Optional: risk analysis
 
