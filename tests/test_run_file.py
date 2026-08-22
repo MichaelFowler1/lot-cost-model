@@ -351,3 +351,69 @@ class TestElementManagement:
             "1.1 Airframe", "1.2 Propulsion"
         ]
         assert app.elements[1]["analogy"] == [["2015", "12", "402.10"]]
+
+
+class TestRollUpFillsTheResultsTab:
+    """A roll-up prices every element, so tab 4 should not claim otherwise."""
+
+    def _two_elements(self, app):
+        fy = ["2028", "2029", "2030", "2031", "2032", "2033"]
+        ac = [12, 20, 30, 40, 25, 10]
+        hist = list(range(2015, 2021))
+
+        def rows(q, a):
+            return [[str(y), str(x), f"{c:.2f}"]
+                    for y, x, c in zip(hist, q, a)]
+
+        app.elements = [
+            {"name": "1.1 Airframe",
+             "analogy": rows([5, 9, 14, 22, 34, 50],
+                             [857.91, 645.57, 531.74, 437.51, 380.10,
+                              332.21]),
+             "estimate": [[f, str(q), "1.15"] for f, q in zip(fy, ac)]},
+            {"name": "1.2 Propulsion",
+             "analogy": rows([12, 20, 30, 44, 68, 100],
+                             [402.10, 331.55, 288.90, 254.30, 228.75,
+                              210.40]),
+             "estimate": [[f, str(round(q * 2 * 1.1)), "1.0"]
+                          for f, q in zip(fy, ac)]},
+        ]
+        app._refresh_element_list(0)
+
+    def test_a_roll_up_fills_the_results_tab_for_the_selected_element(
+        self, app, tmp_path
+    ):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        self._two_elements(app)
+        app.var_program.set("DEMO")
+        app.var_outfile.set(str(tmp_path / "out.xlsx"))
+        app.var_prog_risk.set(False)
+
+        assert len(app.tree.get_children()) == 0
+        app.run_program()
+        assert len(app.tree.get_children()) > 0
+        assert "1.1 Airframe" in app.lbl_result.cget("text")
+
+    def test_it_does_not_steal_the_tab(self, app, tmp_path):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        self._two_elements(app)
+        app.var_outfile.set(str(tmp_path / "out.xlsx"))
+        app.var_prog_risk.set(False)
+        app.run_program()
+        # The roll-up is what was asked for, so that is what stays on screen.
+        assert app.nb.tab(app.nb.select(), "text").strip().startswith("6.")
+
+    def test_it_follows_the_selected_element(self, app, tmp_path):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        self._two_elements(app)
+        app.var_outfile.set(str(tmp_path / "out.xlsx"))
+        app.var_prog_risk.set(False)
+        app._refresh_element_list(1)
+        app.run_program()
+        assert "1.2 Propulsion" in app.lbl_result.cget("text")

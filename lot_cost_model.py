@@ -2499,7 +2499,11 @@ class LotCostApp(tk.Tk):
         f = self.tab_results
         self.lbl_result = ttk.Label(
             f,
-            text="No run yet. Fill in the lots, then click Run Model.",
+            text=(
+                "No run yet. These tabs show one element at a time: fill in "
+                "its lots and click Run Model, or run the program roll-up on "
+                "tab 6, which fills this in for the element you have selected."
+            ),
             style="Sub.TLabel",
         )
         self.lbl_result.pack(anchor="w", padx=8, pady=8)
@@ -2944,6 +2948,24 @@ class LotCostApp(tk.Tk):
         self.program_result = result
         self._show_program(result)
         self._show_program_extras(result)
+
+        # The roll-up priced every element, so tab 4 can show the selected
+        # one instead of saying no run has happened.
+        selected = self.elements[self.current_element]["name"]
+        mine = next(
+            (e for e in result.elements if e.name == selected), None
+        )
+        if mine is not None:
+            self._show_results(mine.summary, switch=False)
+            self.lbl_result.config(
+                text=(
+                    f"{mine.name}, from the program roll-up. It selected "
+                    f"{mine.model} and came to {mine.total:,.2f} before "
+                    "risk. "
+                    "Switch elements with the bar above the tabs; "
+                    "tab 6 has the program."
+                )
+            )
         self.nb.select(self.tab_program)
         self.var_prog_status.set(
             f"{len(result.elements)} element(s). Total before risk "
@@ -3900,7 +3922,7 @@ class LotCostApp(tk.Tk):
         finally:
             self.btn_run.config(state="normal")
 
-    def _show_results(self, summary_df: pd.DataFrame):
+    def _show_results(self, summary_df: pd.DataFrame, switch: bool = True):
         self.tree.delete(*self.tree.get_children())
         for _, row in summary_df.iterrows():
             vals = [
@@ -3912,7 +3934,8 @@ class LotCostApp(tk.Tk):
             ]
             tag = "sel" if vals[0] == "SELECTED" else ""
             self.tree.insert("", "end", values=vals, tags=(tag,))
-        self.nb.select(self.tab_results)
+        if switch:
+            self.nb.select(self.tab_results)
 
 
 # ============================================================================
