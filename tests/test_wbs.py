@@ -1,0 +1,359 @@
+"""Rolling several WBS elements into one programme estimate.
+
+The arithmetic here is easy to get right and easy to get subtly wrong, so
+these check the two things a reviewer would: that the total really is the sum
+of its parts on every axis, and that each element kept its own curve rather
+than being quietly blended with the others.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import wbs
+
+FY_HIST = [2015, 2016, 2017, 2018, 2019, 2020]
+FY_BUY = [2028, 2029, 2030, 2031, 2032, 2033]
+AIRCRAFT = [12.0, 20.0, 30.0, 40.0, 25.0, 10.0]
+
+
+def analogy(qty, auc):
+    return pd.DataFrame(
+        {
+            "Lot": range(1, len(qty) + 1),
+            "Lot FY": FY_HIST,
+            "Qty": [float(q) for q in qty],
+            "AUC ($K)": auc,
+        }
+    )
+
+
+def airframe(**kw):
+    return wbs.Element(
+        name="1.1 Airframe",
+        analogy=analogy(
+            [5, 9, 14, 22, 34, 50],
+            [857.91, 645.57, 531.74, 437.51, 380.10, 332.21],
+        ),
+        quantities=list(AIRCRAFT),
+        complexity=1.15,
+        **kw,
+    )
+
+
+def propulsion(**kw):
+    # Two engines per aircraft plus a 10% spares provision.
+    return wbs.Element(
+        name="1.2 Propulsion",
+        analogy=analogy(
+            [12, 20, 30, 44, 68, 100],
+            [402.10, 331.55, 288.90, 254.30, 228.75, 210.40],
+        ),
+        quantities=[round(q * 2 * 1.10) for q in AIRCRAFT],
+        complexity=1.0,
+        **kw,
+    )
+
+
+def avionics(**kw):
+    return wbs.Element(
+        name="1.3 Avionics kit",
+        analogy=analogy(
+            [6, 11, 16, 26, 38, 55],
+            [610.00, 486.20, 421.30, 366.10, 330.55, 302.80],
+        ),
+        quantities=[q + 2 for q in AIRCRAFT],
+        complexity=1.05,
+        **kw,
+    )
+
+
+def program(*elements, name="TEST_PROGRAM"):
+    return wbs.Program(
+        name=name,
+        fiscal_years=FY_BUY,
+        elements=list(elements) or [airframe(), propulsion(), avionics()],
+    )
+
+
+@pytest.fixture(scope="module")
+def rolled():
+    return wbs.roll_up(program(), simulate=False)
+
+
+class TestRollUpArithmetic:
+    def test_total_is_the_sum_of_the_elements(self, rolled):
+        assert rolled.total == pytest.approx(
+            sum(e.total for e in rolled.elements), rel=1e-9
+        )
+
+    def test_total_is_also_the_sum_down_the_lots(self, rolled):
+        assert rolled.by_lot["Program Total ($)"].sum() == pytest.approx(
+            rolled.total, rel=1e-6
+        )
+
+    def test_every_lot_row_is_the_sum_across_elements(self, rolled):
+        names = [e.name for e in rolled.elements]
+        across = rolled.by_lot[names].sum(axis=1).to_numpy()
+        np.testing.assert_allclose(
+            across, rolled.by_lot["Program Total ($)"].to_numpy(), atol=0.02
+        )
+
+    def test_one_row_per_lot_in_the_schedule(self, rolled):
+        assert len(rolled.by_lot) == len(FY_BUY)
+        assert rolled.by_lot["Fiscal Year"].tolist() == FY_BUY
+
+    def test_element_share_sums_to_one(self, rolled):
+        table = wbs.element_summary(rolled)
+        shares = table.loc[
+            table["WBS Element"] != "PROGRAM TOTAL", "Share of program"
+        ]
+        assert shares.sum() == pytest.approx(1.0, abs=1e-3)
+
+
+class TestElementsStayIndependent:
+    def test_each_element_gets_its_own_fit(self, rolled):
+        t1s = [
+            e.projections[f"{e.model} T1 First Unit Cost ($K)"].iloc[0]
+            for e in rolled.elements
+        ]
+        assert len(set(round(t, 2) for t in t1s)) == len(t1s)
+
+    def test_each_element_selects_its_own_model(self, rolled):
+        # Nothing forces them to agree, and the summary must report each
+        # element's own choice rather than one blended answer.
+        assert {e.name for e in rolled.elements} == {
+            "1.1 Airframe", "1.2 Propulsion", "1.3 Avionics kit"
+        }
+        for e in rolled.elements:
+            assert e.model in ("LC", "Rate", "LC+Rate")
+
+    def test_quantities_differ_between_elements(self, rolled):
+        # The point of the design: a kit buy and a spares provision change
+        # the count without changing the schedule.
+        units = {
+            e.name: int(e.projections["Lot Quantity"].sum())
+            for e in rolled.elements
+        }
+        assert units["1.2 Propulsion"] > units["1.1 Airframe"]
+        assert units["1.3 Avionics kit"] > units["1.1 Airframe"]
+
+    def test_changing_one_element_leaves_the_others_alone(self):
+        base = wbs.roll_up(program(), simulate=False)
+        dearer = airframe()
+        dearer.complexity = 2.30            # double the airframe only
+        changed = wbs.roll_up(
+            program(dearer, propulsion(), avionics()), simulate=False
+        )
+        by_name = {e.name: e.total for e in base.elements}
+        for e in changed.elements:
+            if e.name == "1.1 Airframe":
+                assert e.total == pytest.approx(2 * by_name[e.name], rel=1e-6)
+            else:
+                assert e.total == pytest.approx(by_name[e.name], rel=1e-9)
+
+
+class TestLotsAnElementSkips:
+    def test_a_zero_quantity_lot_costs_nothing_and_keeps_its_place(self):
+        late = avionics()
+        late.quantities = [0.0, 0.0] + list(AIRCRAFT[2:])
+        rolled = wbs.roll_up(
+            program(airframe(), late), simulate=False
+        )
+        row = [e for e in rolled.elements if e.name == late.name][0]
+        assert row.by_lot[0] == 0.0 and row.by_lot[1] == 0.0
+        assert len(row.by_lot) == len(FY_BUY)
+        assert row.by_lot[2] > 0
+
+    def test_the_program_total_still_reconciles(self):
+        late = avionics()
+        late.quantities = [0.0, 0.0] + list(AIRCRAFT[2:])
+        rolled = wbs.roll_up(program(airframe(), late), simulate=False)
+        assert rolled.by_lot["Program Total ($)"].sum() == pytest.approx(
+            rolled.total, rel=1e-6
+        )
+
+
+class TestValidation:
+    def test_rejects_a_quantity_vector_of_the_wrong_length(self):
+        bad = airframe()
+        bad.quantities = [1.0, 2.0]
+        with pytest.raises(wbs.ProgramError, match="lot quantities"):
+            wbs.roll_up(program(bad), simulate=False)
+
+    def test_rejects_duplicate_element_names(self):
+        with pytest.raises(wbs.ProgramError, match="both named"):
+            wbs.roll_up(program(airframe(), airframe()), simulate=False)
+
+    def test_rejects_an_element_bought_in_no_lot(self):
+        idle = airframe()
+        idle.quantities = [0.0] * len(FY_BUY)
+        with pytest.raises(wbs.ProgramError, match="no lot"):
+            wbs.roll_up(program(idle), simulate=False)
+
+    def test_rejects_a_negative_quantity(self):
+        bad = airframe()
+        bad.quantities = [-1.0] + list(AIRCRAFT[1:])
+        with pytest.raises(wbs.ProgramError, match="negative"):
+            wbs.roll_up(program(bad), simulate=False)
+
+    def test_rejects_a_program_with_no_elements(self):
+        with pytest.raises(wbs.ProgramError, match="at least one element"):
+            wbs.roll_up(wbs.Program("P", FY_BUY, []), simulate=False)
+
+    def test_an_element_that_cannot_be_fitted_stops_the_roll_up(self):
+        # Better than a total that quietly omits an element.
+        thin = airframe()
+        thin.analogy = thin.analogy.head(2)
+        with pytest.raises(wbs.ProgramError, match="1.1 Airframe"):
+            wbs.roll_up(program(thin), simulate=False)
+
+
+# The correlated roll-up needs cost_core.
+risk = pytest.mark.skipif(
+    not wbs.RISK_AVAILABLE,
+    reason=f"cost_core not installed: {wbs.RISK_IMPORT_ERROR}",
+)
+
+
+@pytest.fixture(scope="module")
+def simulated():
+    return wbs.roll_up(program(), n_iter=8000, seed=11)
+
+
+@risk
+class TestProgramRisk:
+    def test_percentiles_are_ordered(self, simulated):
+        assert simulated.p50 < simulated.p80 < simulated.p90
+
+    def test_point_estimate_sits_near_the_middle(self, simulated):
+        assert 30 < simulated.point_percentile < 70
+
+    def test_every_element_carries_its_own_draws(self, simulated):
+        for e in simulated.elements:
+            assert e.totals is not None
+            assert len(e.totals) == 8000
+
+    def test_the_program_is_wider_than_any_single_element(self, simulated):
+        # A sum of correlated positives has more absolute spread than any of
+        # its parts, even though its CV is smaller.
+        spread = simulated.p80 - simulated.p50
+        for e in simulated.elements:
+            element_spread = float(
+                np.percentile(e.totals, 80) - np.percentile(e.totals, 50)
+            )
+            assert spread > element_spread
+
+    def test_same_seed_reproduces_the_program_p80(self):
+        a = wbs.roll_up(program(), n_iter=4000, seed=5)
+        b = wbs.roll_up(program(), n_iter=4000, seed=5)
+        assert a.p80 == b.p80
+
+    def test_more_correlation_widens_the_program_total(self):
+        low = wbs.roll_up(program(), n_iter=8000, seed=5, correlation=0.0)
+        high = wbs.roll_up(program(), n_iter=8000, seed=5, correlation=0.8)
+        assert high.cv > low.cv
+
+    def test_the_sampler_agrees_with_the_algebra_on_correlation(
+        self, simulated
+    ):
+        # 1 + rho(k-1) is the ratio for *equally variable* elements, and
+        # these are not: their CVs run from 0.014 to 0.023. So the closed
+        # form lands below 1.5 rather than on it, and the real check is that
+        # the measured inflation matches whatever the algebra says it is.
+        analytic = simulated.variance_ratio_analytic
+        assert 1.0 < analytic < 1.5
+        assert simulated.independence_understates_sd_by == pytest.approx(
+            np.sqrt(analytic), rel=0.05
+        )
+
+    def test_the_correlation_assumption_is_stated(self, simulated):
+        text = " ".join(
+            wbs.program_summary(simulated)["Value"].astype(str).tolist()
+        )
+        assert "0.25" in text
+        assert "independen" in text.lower()
+
+    def test_scurve_is_monotonic_and_agrees_with_the_percentiles(
+        self, simulated
+    ):
+        sc = simulated.scurve
+        assert len(sc) == 99
+        assert np.all(np.diff(sc["Program Total ($)"].to_numpy()) >= 0)
+        at = sc.set_index((sc["Percentile"] * 100).round().astype(int))[
+            "Program Total ($)"
+        ]
+        assert at[80] == pytest.approx(simulated.p80, rel=1e-6)
+
+    def test_adding_element_p80s_overstates_the_program_p80(self):
+        # The whole reason this is not a column of SUMs. Checked at zero
+        # correlation, where the diversification is unambiguous: at the 0.25
+        # default the two sit within the half-percent the distribution
+        # handoff costs, so the comparison would not mean anything.
+        indep = wbs.roll_up(program(), n_iter=20000, seed=5, correlation=0.0)
+        naive = sum(
+            float(np.percentile(e.totals, 80)) for e in indep.elements
+        )
+        assert naive > indep.p80
+
+
+@risk
+class TestSummaries:
+    def test_element_summary_ends_with_the_program_total(self, simulated):
+        table = wbs.element_summary(simulated)
+        assert table.iloc[-1]["WBS Element"] == "PROGRAM TOTAL"
+        assert table.iloc[-1]["Element Total ($)"] == pytest.approx(
+            round(simulated.total, 2)
+        )
+
+    def test_program_summary_reports_the_reserve(self, simulated):
+        items = set(wbs.program_summary(simulated)["Item"])
+        assert "Program P80 ($)" in items
+        assert "Reserve to P80 ($)" in items
+
+
+class TestWithoutCostCore:
+    def test_the_point_estimate_still_rolls_up(self, monkeypatch):
+        # The deterministic total must not depend on the risk library.
+        monkeypatch.setattr(wbs, "RISK_AVAILABLE", False)
+        rolled = wbs.roll_up(program(), simulate=True)
+        assert rolled.total > 0
+        assert rolled.p80 is None
+        assert any("cost_core" in w for w in rolled.warnings)
+
+
+@risk
+class TestDistributionHandoff:
+    """cost_core's WBS model takes distributions, not draws.
+
+    Summarising each element as a lognormal to get it there costs accuracy,
+    so the cost is measured and bounded rather than assumed away.
+    """
+
+    def test_the_fitted_spec_tracks_the_element_it_replaces(self, simulated):
+        from scipy import stats
+
+        for e in simulated.elements:
+            spec = wbs._lognormal_spec(e.totals)
+            fitted = stats.lognorm(s=spec["sigma"], scale=np.exp(spec["mean"]))
+            for level in (0.05, 0.50, 0.80, 0.90, 0.95):
+                empirical = float(np.percentile(e.totals, level * 100))
+                assert fitted.ppf(level) == pytest.approx(
+                    empirical, rel=wbs.SPEC_TOLERANCE
+                ), f"{e.name} at P{level * 100:.0f}"
+
+    def test_the_median_survives_the_handoff_almost_exactly(self, simulated):
+        from scipy import stats
+
+        for e in simulated.elements:
+            spec = wbs._lognormal_spec(e.totals)
+            fitted = stats.lognorm(s=spec["sigma"], scale=np.exp(spec["mean"]))
+            assert fitted.ppf(0.5) == pytest.approx(
+                float(np.median(e.totals)), rel=0.002
+            )
+
+    def test_the_approximation_is_disclosed(self, simulated):
+        text = " ".join(simulated.notes)
+        assert "lognormal" in text and "half a percent" in text

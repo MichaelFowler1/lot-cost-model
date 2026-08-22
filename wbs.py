@@ -1,0 +1,658 @@
+"""Roll several WBS elements into one program estimate.
+
+Each element carries its own analogy history and gets its own curve: the
+airframe learns at one rate, the engines at another, and neither is told
+about the other. What they share is the buy schedule. The fiscal years are
+a property of the programme, while the quantity per lot belongs to the
+element, because a kit buy or a spares provision changes how many units of
+that element you buy without changing when you buy them.
+
+Rolling the point estimates up is arithmetic. Rolling the *risk* up is not,
+and it is the reason this module exists rather than a column of SUMs in a
+spreadsheet. Elements on one programme share a workforce, a supply base and
+a schedule, so their overruns arrive together. Adding independent
+distributions understates the variance of the total by a factor of
+1 + rho(k-1), which for ten elements at rho = 0.3 is 3.7 in variance, and
+the error lands on the upper tail where the P80 lives. The correlated
+roll-up here is cost_core's, which exists for exactly this.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+import pandas as pd
+
+from lot_cost_model import (
+    SETTINGS,
+    generate_analyst_summary,
+    run_lot_cost_model,
+)
+
+try:
+    from cost_core.lots import selected_model_name, simulate_buy
+    from cost_core.monte_carlo import (
+        CostElement,
+        RiskModel,
+        correlation_impact,
+        simulate_risk_model,
+    )
+
+    RISK_AVAILABLE = True
+    RISK_IMPORT_ERROR = ""
+except Exception as exc:  # pragma: no cover - depends on the environment
+    RISK_AVAILABLE = False
+    RISK_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+#: cost_core's own default. Stated rather than hidden: it is an assumption,
+#: and an unstated assumption is the failure this whole module guards against.
+DEFAULT_CORRELATION = 0.25
+
+
+class ProgramError(Exception):
+    """The programme as described cannot be priced."""
+
+
+@dataclass
+class Element:
+    """One WBS element: its own history, its own share of the buy."""
+
+    name: str
+    #: Analogy lots for this element alone. Columns: Lot FY, Qty, AUC ($K).
+    analogy: pd.DataFrame
+    #: Units of this element bought in each lot of the programme schedule.
+    quantities: list[float]
+    #: Complexity factor per lot. A single value is broadcast.
+    complexity: list[float] | float = 1.0
+    #: Per-element overrides, merged over SETTINGS.
+    settings: dict = field(default_factory=dict)
+
+    def complexity_per_lot(self, n_lots: int) -> list[float]:
+        if isinstance(self.complexity, (int, float)):
+            return [float(self.complexity)] * n_lots
+        return [float(c) for c in self.complexity]
+
+
+@dataclass
+class Program:
+    """A shared buy schedule and the elements bought against it."""
+
+    name: str
+    #: One fiscal year per lot. Every element is priced against these lots.
+    fiscal_years: list[int]
+    elements: list[Element] = field(default_factory=list)
+
+    @property
+    def n_lots(self) -> int:
+        return len(self.fiscal_years)
+
+    def validate(self):
+        if not self.fiscal_years:
+            raise ProgramError("The programme needs at least one lot.")
+        if not self.elements:
+            raise ProgramError("The programme needs at least one element.")
+        seen = set()
+        for el in self.elements:
+            if el.name in seen:
+                raise ProgramError(f"Two elements are both named {el.name!r}.")
+            seen.add(el.name)
+            if len(el.quantities) != self.n_lots:
+                raise ProgramError(
+                    f"{el.name} has {len(el.quantities)} lot quantities but "
+                    f"the programme has {self.n_lots} lots. Every element is "
+                    "priced against the same schedule; a lot it does not "
+                    "take part in is a quantity of zero."
+                )
+            if any(q < 0 for q in el.quantities):
+                raise ProgramError(f"{el.name} has a negative lot quantity.")
+            if not any(q > 0 for q in el.quantities):
+                raise ProgramError(
+                    f"{el.name} is bought in no lot, so it has no cost. "
+                    "Remove it or give it a quantity."
+                )
+
+
+@dataclass
+class ElementResult:
+    """What one element came to, and how."""
+
+    name: str
+    model: str
+    projections: pd.DataFrame
+    summary: pd.DataFrame
+    ctx: dict
+    total: float
+    by_lot: np.ndarray
+    n_lots_fitted: int
+    #: Present only when the element was simulated.
+    totals: np.ndarray | None = None
+
+
+@dataclass
+class ProgramResult:
+    """The rolled-up estimate, with every element still visible inside it."""
+
+    program: str
+    elements: list[ElementResult]
+    by_lot: pd.DataFrame
+    total: float
+    #: Correlated programme distribution, when the risk roll-up ran.
+    p50: float | None = None
+    p80: float | None = None
+    p90: float | None = None
+    mean: float | None = None
+    std: float | None = None
+    cv: float | None = None
+    point_percentile: float | None = None
+    correlation: float | None = None
+    n_iter: int | None = None
+    scurve: pd.DataFrame | None = None
+    #: What treating the elements as independent would have understated.
+    independence_understates_sd_by: float | None = None
+    #: The closed-form 1 + rho(k-1), to check the sampler against the algebra.
+    variance_ratio_analytic: float | None = None
+    #: How much lower the P80 would sit under independence, as a fraction.
+    p80_understatement: float | None = None
+    #: The share of the P80 reserve an independence assumption throws away.
+    reserve_understatement: float | None = None
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _estimate_frame(program: Program, element: Element) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Lot": range(1, program.n_lots + 1),
+            "Lot FY": program.fiscal_years,
+            "Qty": [float(q) for q in element.quantities],
+            "Complexity": element.complexity_per_lot(program.n_lots),
+        }
+    )
+
+
+def price_element(
+    program: Program, element: Element, overrides: dict | None = None
+) -> ElementResult:
+    """Fit this element's own curve and price its share of the buy.
+
+    A lot the element is not bought in carries a quantity of zero, which the
+    engine cannot price, so those lots are dropped for the fit and added back
+    as zero cost afterwards. That keeps every element's by-lot vector the same
+    length as the programme schedule.
+    """
+    estimate = _estimate_frame(program, element)
+    priced_mask = estimate["Qty"].to_numpy(dtype=float) > 0
+    if not priced_mask.any():
+        raise ProgramError(f"{element.name} is bought in no lot.")
+
+    cfg = dict(overrides or {})
+    cfg.update(element.settings)
+
+    try:
+        projections, ctx = run_lot_cost_model(
+            element.analogy, estimate.loc[priced_mask].copy(), cfg or None
+        )
+    except ValueError as exc:
+        raise ProgramError(f"{element.name}: {exc}") from exc
+
+    summary = generate_analyst_summary(ctx, {"Program": element.name})
+    model = _selected_model(summary)
+
+    cost_col = f"{model} Lot Cost After Complexity ($)"
+    priced = projections[cost_col].to_numpy(dtype=float)
+
+    by_lot = np.zeros(program.n_lots, dtype=float)
+    by_lot[np.flatnonzero(priced_mask)] = priced
+
+    return ElementResult(
+        name=element.name,
+        model=model,
+        projections=projections,
+        summary=summary,
+        ctx=ctx,
+        total=float(by_lot.sum()),
+        by_lot=by_lot,
+        n_lots_fitted=int(ctx["n_keep"]),
+    )
+
+
+def _selected_model(summary: pd.DataFrame) -> str:
+    """Which model the engine picked, without needing cost_core installed."""
+    row = summary.loc[summary["Item"] == "SELECTED"]
+    if len(row):
+        for name in ("LC", "Rate", "LC+Rate"):
+            if str(row.iloc[0][name]).strip().upper() == "YES":
+                return name
+    raise ProgramError("No model was selected; nothing could be fitted.")
+
+
+#: How far the fitted spec may sit from the element's own simulated
+#: percentiles before it stops being a fair summary of it. Measured, not
+#: guessed: see tests/test_wbs.py::TestDistributionHandoff.
+SPEC_TOLERANCE = 0.015
+
+
+def _lognormal_spec(totals: np.ndarray) -> dict:
+    """Describe an element's simulated total as a lognormal.
+
+    cost_core's WBS model takes distributions rather than raw draws, so each
+    element's simulated total has to be summarised by a two-parameter family
+    before it can be correlated with the others. That step costs accuracy: an
+    element total is a sum of six-odd correlated lognormal lot costs, which is
+    not itself lognormal, so no two-parameter fit reproduces it exactly.
+
+    Matching in log space was chosen by measurement rather than by taste. It
+    tracks the element's own percentiles to about half a percent, and beat
+    both arithmetic moment-matching and a normal on the same data. The median
+    comes back within 0.05%; the upper tail is the part that gives, sitting
+    around half a percent high at P80. A test bounds it at
+    :data:`SPEC_TOLERANCE` so it cannot quietly get worse.
+    """
+    logs = np.log(np.clip(totals, 1e-12, None))
+    return {
+        "type": "lognormal",
+        "mean": float(np.mean(logs)),
+        "sigma": float(max(np.std(logs, ddof=1), 1e-9)),
+    }
+
+
+def roll_up(
+    program: Program,
+    overrides: dict | None = None,
+    *,
+    simulate: bool = True,
+    correlation: float = DEFAULT_CORRELATION,
+    n_iter: int = 20000,
+    seed: int = 11,
+) -> ProgramResult:
+    """Price every element and add them into one programme estimate.
+
+    Raises:
+        ProgramError: If the programme is malformed, or an element cannot be
+            fitted. One element failing stops the roll-up rather than
+            producing a total that quietly omits it.
+    """
+    program.validate()
+
+    results = [price_element(program, el, overrides) for el in program.elements]
+
+    by_lot = pd.DataFrame({"Lot": range(1, program.n_lots + 1),
+                           "Fiscal Year": program.fiscal_years})
+    for r in results:
+        by_lot[r.name] = np.round(r.by_lot, 2)
+    by_lot["Program Total ($)"] = np.round(
+        np.sum([r.by_lot for r in results], axis=0), 2
+    )
+
+    notes = [
+        f"{len(results)} WBS element(s), each fitted to its own analogy "
+        "history and priced against the shared lot schedule.",
+        "Element quantities differ where the buy differs, so a kit or a "
+        "spares provision changes the count without changing the schedule.",
+    ]
+    warnings: list[str] = []
+
+    result = ProgramResult(
+        program=program.name,
+        elements=results,
+        by_lot=by_lot,
+        total=float(by_lot["Program Total ($)"].sum()),
+        notes=notes,
+        warnings=warnings,
+    )
+
+    if simulate:
+        if not RISK_AVAILABLE:
+            warnings.append(
+                "cost_core is not installed, so the programme total carries "
+                f"no risk analysis. {RISK_IMPORT_ERROR}"
+            )
+        else:
+            _program_risk(result, correlation, n_iter, seed)
+
+    return result
+
+
+def _program_risk(
+    result: ProgramResult, correlation: float, n_iter: int, seed: int
+):
+    """Simulate each element from its own history, then correlate the sum."""
+    elements = []
+    for r in result.elements:
+        buy = simulate_buy(
+            r.ctx,
+            r.projections,
+            r.model,
+            n_iter=n_iter,
+            seed=seed,
+            lot_correlation=0.30,
+        )
+        r.totals = np.asarray(buy.totals, dtype=float)
+        elements.append(
+            CostElement(
+                name=r.name,
+                distribution=_lognormal_spec(r.totals),
+                point_estimate=r.total,
+            )
+        )
+
+    model = RiskModel(
+        elements=elements,
+        default_correlation=float(correlation),
+        name=result.program,
+    )
+
+    import warnings as _warnings
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        sim = simulate_risk_model(model, n_iter=n_iter, seed=seed)
+    for w in caught:
+        text = str(w.message)
+        if text not in result.warnings:
+            result.warnings.append(text)
+
+    totals = np.asarray(sim.continuous_total, dtype=float)
+    result.p50 = float(sim.p50)
+    result.p80 = float(sim.p80)
+    result.p90 = float(sim.p90)
+    result.mean = float(sim.mean)
+    result.std = float(sim.std)
+    result.cv = float(sim.cv)
+    result.point_percentile = float(sim.point_estimate_percentile)
+    result.correlation = float(correlation)
+    result.n_iter = int(n_iter)
+    result.scurve = _scurve(totals)
+
+    if len(elements) > 1:
+        # The demonstration the correlation argument rests on: run it again
+        # with the elements independent and report what that would have cost.
+        try:
+            impact = correlation_impact(model, n_iter=n_iter, seed=seed)
+            # Reported on the standard deviation rather than the variance,
+            # because that is the scale a reserve is quoted in.
+            result.independence_understates_sd_by = float(
+                np.sqrt(impact.empirical_variance_ratio)
+            )
+            result.variance_ratio_analytic = float(
+                impact.analytic_variance_ratio
+            )
+            # Both of these are fractions, not dollars.
+            result.p80_understatement = float(impact.p80_understatement)
+            result.reserve_understatement = float(
+                impact.reserve_understatement
+            )
+        except Exception as exc:
+            result.warnings.append(
+                f"Could not measure the cost of assuming independence: {exc}"
+            )
+
+    result.notes.append(
+        f"Element totals are correlated at {correlation:.2f}. Treating them "
+        "as independent would let their overruns cancel and understate the "
+        "spread of the programme total."
+    )
+    result.notes.append(
+        "Each element is summarised as a lognormal before being correlated "
+        "with the others, which tracks its own percentiles to about half a "
+        "percent. Read the programme percentiles at that resolution."
+    )
+
+
+def _scurve(totals: np.ndarray, step: int = 1) -> pd.DataFrame:
+    pct = np.arange(step, 100, step)
+    return pd.DataFrame(
+        {
+            "Percentile": pct / 100.0,
+            "Program Total ($)": np.round(np.percentile(totals, pct), 2),
+        }
+    )
+
+
+def element_summary(result: ProgramResult) -> pd.DataFrame:
+    """One row per element, for the roll-up sheet and the results pane."""
+    rows = []
+    for r in result.elements:
+        share = r.total / result.total if result.total else float("nan")
+        row = {
+            "WBS Element": r.name,
+            "Model": r.model,
+            "Analogy lots": r.n_lots_fitted,
+            "T1 ($K)": r.projections[
+                f"{r.model} T1 First Unit Cost ($K)"
+            ].iloc[0],
+            "Units bought": int(np.sum(r.projections["Lot Quantity"])),
+            "Element Total ($)": round(r.total, 2),
+            "Share of program": round(share, 4),
+        }
+        if r.totals is not None:
+            row["Element P80 ($)"] = round(float(np.percentile(r.totals, 80)), 2)
+        rows.append(row)
+
+    total_row = {
+        "WBS Element": "PROGRAM TOTAL",
+        "Model": "",
+        "Analogy lots": "",
+        "T1 ($K)": "",
+        "Units bought": "",
+        "Element Total ($)": round(result.total, 2),
+        "Share of program": 1.0,
+    }
+    if result.p80 is not None:
+        total_row["Element P80 ($)"] = round(result.p80, 2)
+    rows.append(total_row)
+    return pd.DataFrame(rows)
+
+
+def program_summary(result: ProgramResult) -> pd.DataFrame:
+    """The programme headline, as a two-column table."""
+    def money(v):
+        return "n/a" if v is None else f"{v:,.2f}"
+
+    rows = [
+        ("Program", result.program),
+        ("WBS elements", str(len(result.elements))),
+        ("Lots", str(len(result.by_lot))),
+        ("Program total, point estimate ($)", money(result.total)),
+    ]
+    if result.p50 is not None:
+        rows += [
+            ("", ""),
+            ("Element correlation", f"{result.correlation:.2f}"),
+            ("Monte Carlo iterations", f"{result.n_iter:,}"),
+            ("Program P50 ($)", money(result.p50)),
+            ("Program P80 ($)", money(result.p80)),
+            ("Program P90 ($)", money(result.p90)),
+            ("Program CV", f"{result.cv:.4f}"),
+            ("Reserve to P80 ($)", money(result.p80 - result.total)),
+            (
+                "Point estimate falls at",
+                f"P{result.point_percentile:.0f} of the simulated program",
+            ),
+        ]
+        if result.independence_understates_sd_by:
+            rows.append((
+                "Independence would understate spread by",
+                f"{result.independence_understates_sd_by:.2f}x on the "
+                "standard deviation "
+                f"(variance ratio {result.variance_ratio_analytic:.2f} "
+                "by the closed form)",
+            ))
+        if result.p80_understatement is not None:
+            rows.append((
+                "P80 under independence would be low by",
+                f"{result.p80_understatement:.2%}",
+            ))
+        if result.reserve_understatement is not None:
+            rows.append((
+                "Share of the P80 reserve independence throws away",
+                f"{result.reserve_understatement:.1%}",
+            ))
+    for i, n in enumerate(result.notes):
+        rows.append(("Note" if i == 0 else "", n))
+    for i, w in enumerate(result.warnings):
+        rows.append(("Warning" if i == 0 else "", w))
+    return pd.DataFrame(rows, columns=["Item", "Value"])
+
+
+def save_program_workbook(filename: str, result: ProgramResult):
+    """Write the roll-up: programme first, then every element behind it.
+
+    The order is deliberate. The programme total is what gets briefed, but a
+    reviewer's first question is which element it came from, so the element
+    breakdown sits immediately behind the headline rather than at the end.
+    """
+    import openpyxl
+    from openpyxl.chart import Reference, ScatterChart, Series
+
+    from lot_cost_model import _format_chart, _money_short, _nice_bounds
+
+    element_table = element_summary(result)
+    with pd.ExcelWriter(filename, engine="openpyxl") as writer:
+        program_summary(result).to_excel(
+            writer, sheet_name="Program_Summary", index=False
+        )
+        element_table.to_excel(
+            writer, sheet_name="Program_Elements", index=False
+        )
+        result.by_lot.to_excel(
+            writer, sheet_name="Program_By_Lot", index=False
+        )
+        if result.scurve is not None:
+            result.scurve.to_excel(
+                writer, sheet_name="Program_SCurve", index=False
+            )
+        for r in result.elements:
+            r.projections.to_excel(
+                writer, sheet_name=_sheet_name(r.name), index=False
+            )
+
+    wb = openpyxl.load_workbook(filename)
+
+    # Cost by fiscal year, stacked so the element mix is visible.
+    ws = wb["Program_By_Lot"]
+    last = len(result.by_lot) + 1
+    if last > 1:
+        from openpyxl.chart import BarChart
+
+        bar = BarChart()
+        bar.type = "col"
+        bar.grouping = "stacked"
+        bar.overlap = 100
+        _format_chart(
+            bar, f"{result.program}: cost by fiscal year",
+            "Fiscal Year", "Cost ($)", 20, 11,
+        )
+        names = [r.name for r in result.elements]
+        for i, _ in enumerate(names):
+            bar.series.append(
+                Series(
+                    Reference(ws, min_col=3 + i, min_row=1, max_row=last),
+                    title_from_data=True,
+                )
+            )
+        bar.set_categories(
+            Reference(ws, min_col=2, min_row=2, max_row=last)
+        )
+        # A fiscal year is a label, not a quantity: the shared chart format
+        # would otherwise render 2028 as "2,028".
+        bar.x_axis.numFmt = "0"
+        bar.y_axis.numFmt = '#,##0,,"M"' 
+        ws.add_chart(bar, f"{_col_letter(len(names) + 5)}2")
+
+    if result.scurve is not None and len(result.scurve):
+        _add_program_scurve(wb, result, _format_chart, _money_short,
+                            _nice_bounds, ScatterChart, Series, Reference)
+
+    wb.save(filename)
+
+
+def _col_letter(idx: int) -> str:
+    from openpyxl.utils import get_column_letter
+
+    return get_column_letter(idx)
+
+
+def _sheet_name(name: str) -> str:
+    """Excel refuses several characters and anything over 31 chars."""
+    cleaned = "".join(c for c in name if c not in r"[]:*?/\\")
+    return (cleaned[:31] or "Element").strip()
+
+
+def _add_program_scurve(
+    wb, result, _format_chart, _money_short, _nice_bounds,
+    ScatterChart, Series, Reference,
+):
+    ws = wb["Program_SCurve"]
+    last = len(result.scurve) + 1
+    for row in range(2, last + 1):
+        ws.cell(row=row, column=1).number_format = "0%"
+        ws.cell(row=row, column=2).number_format = "#,##0"
+
+    curve = ScatterChart()
+    _format_chart(
+        curve,
+        f"{result.program}: probability the program comes in at or below",
+        "Program Total ($)", "Cumulative Probability", 20, 11,
+    )
+    curve.y_axis.numFmt = "0%"
+    curve.y_axis.scaling.min = 0
+    curve.y_axis.scaling.max = 1
+
+    lo = float(result.scurve["Program Total ($)"].min())
+    hi = float(result.scurve["Program Total ($)"].max())
+    span = hi - lo
+    if hi >= 1e9:
+        curve.x_axis.numFmt = '#,##0.0,,,"B"' if span < 1e10 else '#,##0,,,"B"'
+    elif hi >= 1e6:
+        curve.x_axis.numFmt = '#,##0.0,,"M"' if span < 1e7 else '#,##0,,"M"'
+    else:
+        curve.x_axis.numFmt = '#,##0,"K"'
+    nice_lo, nice_hi = _nice_bounds(lo, hi)
+    curve.x_axis.scaling.min = max(0.0, nice_lo)
+    curve.x_axis.scaling.max = nice_hi
+
+    from openpyxl.chart.series import SeriesLabel
+
+    line = Series(
+        values=Reference(ws, min_col=1, min_row=1, max_row=last),
+        xvalues=Reference(ws, min_col=2, min_row=2, max_row=last),
+        title_from_data=True,
+    )
+    line.marker.symbol = "none"
+    line.smooth = True
+    line.tx = SeriesLabel(v="Program total distribution")
+    curve.series.append(line)
+
+    from openpyxl.chart.shapes import GraphicalProperties
+
+    pct = result.scurve["Percentile"].round(4)
+    for i, (label, level, colour, symbol) in enumerate(
+        [("P50", 0.50, "0072B2", "circle"), ("P80", 0.80, "D55E00", "diamond")]
+    ):
+        hit = result.scurve.loc[pct == round(level, 4), "Program Total ($)"]
+        if hit.empty:
+            continue
+        cost = float(hit.iloc[0])
+        y_col, x_col = 4 + i * 2, 5 + i * 2
+        ws.cell(row=1, column=y_col, value=f"{label}  {_money_short(cost)}")
+        ws.cell(row=2, column=y_col, value=level).number_format = "0%"
+        ws.cell(row=1, column=x_col, value=f"{label} cost")
+        ws.cell(row=2, column=x_col, value=cost).number_format = "#,##0"
+
+        mark = Series(
+            values=Reference(ws, min_col=y_col, min_row=1, max_row=2),
+            xvalues=Reference(ws, min_col=x_col, min_row=2, max_row=2),
+            title_from_data=True,
+        )
+        mark.marker.symbol = symbol
+        mark.marker.size = 11
+        style = GraphicalProperties(solidFill=colour)
+        style.line.solidFill = "FFFFFF"
+        style.line.width = 19050
+        mark.marker.graphicalProperties = style
+        mark.graphicalProperties.line.noFill = True
+        curve.series.append(mark)
+
+    ws.add_chart(curve, "I2")
