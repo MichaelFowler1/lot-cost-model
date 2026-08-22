@@ -43,17 +43,24 @@ jobs:
       - name: Run tests
         run: pytest -v
 
-  # The tool must also work with cost_core absent: the Risk tab goes dark and
-  # everything else carries on. 3.10 is the floor, because the source uses
-  # PEP 604 annotations.
+  # The tool must also work with cost_core absent: the risk halves go dark and
+  # everything else carries on. This is also where the supported floor is
+  # checked. Every annotation is deferred with `from __future__ import
+  # annotations`, so PEP 604 syntax costs nothing at runtime and 3.9 is the
+  # real floor rather than 3.10. The README says 3.9, so CI has to hold it.
   without-cost-core:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10"]
+    name: without cost_core (python ${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Tk
         run: sudo apt-get update && sudo apt-get install -y python3-tk

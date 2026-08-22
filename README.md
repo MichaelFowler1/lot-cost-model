@@ -70,19 +70,20 @@ quietly handing you a garbage coefficient.
 
 ## Requirements
 
-Python 3.10 or newer, plus:
+Python 3.9 or newer, plus:
 
 ```
 pip install numpy pandas openpyxl
 ```
 
 The interface uses tkinter, which already ships with Python, so there's nothing
-else to install.
+else to install. CI runs the suite on 3.9 and 3.10 as well as 3.11 to 3.13, so
+the floor is checked rather than assumed.
 
 ### Optional: risk analysis
 
-Tab 5 adds prediction intervals and a Monte Carlo of the whole buy. That part
-leans on `cost_core` from the
+Tab 5 adds prediction intervals and a Monte Carlo of the whole buy, and tab 6
+adds the correlated program roll-up. Those lean on `cost_core` from the
 [cost-risk-toolkit](https://github.com/MichaelFowler1/cost-risk-toolkit),
 which needs Python 3.11 or newer:
 
@@ -90,8 +91,10 @@ which needs Python 3.11 or newer:
 pip install git+https://github.com/MichaelFowler1/cost-risk-toolkit.git
 ```
 
-Skip it and everything else still works. The tab just shows you how to install
-it, and the workbook comes out with its usual three sheets.
+Skip it and everything else still works: the three model fits, model
+selection, the projections, the WBS roll-up and every cost-before-risk total.
+Only the risk halves of tabs 5 and 6 go dark, and they tell you how to install
+it. That is the whole difference between running on 3.9 and running on 3.11.
 
 ## Running it
 
