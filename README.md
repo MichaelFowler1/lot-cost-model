@@ -269,14 +269,31 @@ lxml happens to be installed.
 
 ## About the example data
 
-The numbers behind the Load Example buttons are made up. I generated them from
-a 90% learning curve with a $1,000K first unit and a bit of random scatter, so
-the tool has something realistic to chew on without shipping anybody's real
-program data.
+The numbers behind the Load Example buttons are made up. They come from an 88%
+learning curve with a 93% rate slope on a $1,200K first unit, plus a little
+scatter, so the tool has something realistic to chew on without shipping
+anybody's real program data.
 
-It doubles as a sanity check. Run the example and the model recovers a T1 of
-about $1,011 and a slope near 89.7%, which is close to the truth it was built
-from.
+The lot sizes were chosen deliberately. Every analogy lot is a different size,
+spanning 5 to 50 units, which gives an SD(ln qty) of 0.85 against a floor of
+0.05. That matters more than it sounds: with repeated quantities there is
+nothing for a rate term to regress against, the Rate chart collapses into a
+couple of clusters, and the rate models get gated off or come out
+insignificant. Here all three fit, the rate coefficient reaches t = -4.3, and
+LC+Rate is selected on its merits rather than LC winning by default.
+
+The forecast grows to 40 units and then tapers to 10, so the rate term does
+something you can see: unit cost turns back up on that last small lot, which a
+pure learning curve cannot do.
+
+One honest caveat, visible in the example itself. The combined fit is
+excellent, at an R² of 0.9993 and MAPE under 1%, but the individual exponents
+come back at 91.2% learning and 87.1% rate against a truth of 88% and 93%.
+Because lot size rises monotonically, cumulative units and lot size move
+together, so the two exponents trade off against each other even when the
+prediction is nearly perfect. That is a real property of this kind of fit, and
+part of why the selection logic leans on the significance of the rate
+coefficient rather than on R² alone.
 
 ## License
 

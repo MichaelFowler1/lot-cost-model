@@ -15,13 +15,17 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture(scope="session")
 def analogy_df() -> pd.DataFrame:
-    """The bundled demo lots, in the shape run_lot_cost_model expects."""
+    """The bundled demo lots, in the shape run_lot_cost_model expects.
+
+    Kept in step with EXAMPLE_ANALOGY in the main module; a test asserts they
+    have not drifted apart.
+    """
     return pd.DataFrame(
         {
             "Lot": [1, 2, 3, 4, 5, 6],
             "Lot FY": [2015, 2016, 2017, 2018, 2019, 2020],
-            "Qty": [10.0, 20.0, 25.0, 25.0, 15.0, 15.0],
-            "AUC ($K)": [800.61, 639.49, 563.66, 520.05, 502.98, 487.08],
+            "Qty": [5.0, 9.0, 14.0, 22.0, 34.0, 50.0],
+            "AUC ($K)": [857.91, 645.57, 531.74, 437.51, 380.10, 332.21],
         }
     )
 
@@ -32,7 +36,7 @@ def estimate_df() -> pd.DataFrame:
         {
             "Lot": [1, 2, 3, 4, 5, 6],
             "Lot FY": [2028, 2029, 2030, 2031, 2032, 2033],
-            "Qty": [8.0, 16.0, 16.0, 16.0, 12.0, 6.0],
+            "Qty": [12.0, 20.0, 30.0, 40.0, 25.0, 10.0],
             "Complexity": [1.15] * 6,
         }
     )

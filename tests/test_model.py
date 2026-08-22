@@ -65,28 +65,92 @@ class TestHelpers:
 
 
 class TestFit:
-    def test_recovers_the_curve_the_demo_data_came_from(
-        self, analogy_df, estimate_df
-    ):
-        # The bundled numbers were generated from a 90% curve with a $1,000K
-        # first unit. If a change moves these, the fit itself has moved.
+    def test_the_example_fit_has_not_drifted(self, analogy_df, estimate_df):
+        # A regression pin, not a claim about recovering the truth: with lot
+        # size rising monotonically, cumulative units and lot size move
+        # together, so the learning and rate exponents trade off against each
+        # other even though the combined fit is excellent. If these move, the
+        # fit moved.
         proj, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
         assert proj["LC T1 First Unit Cost ($K)"].iloc[0] == pytest.approx(
-            1010.80, abs=0.01
+            1111.17, abs=0.01
         )
         assert proj["LC Learning Slope (%)"].iloc[0] == pytest.approx(
-            89.71, abs=0.01
+            83.89, abs=0.01
+        )
+        assert proj["LC+Rate T1 First Unit Cost ($K)"].iloc[0] == (
+            pytest.approx(1340.23, abs=0.01)
+        )
+        assert proj["LC+Rate Learning Slope (%)"].iloc[0] == pytest.approx(
+            91.24, abs=0.01
+        )
+        assert proj["LC+Rate Rate Slope (%)"].iloc[0] == pytest.approx(
+            87.06, abs=0.01
         )
         assert ctx["n_keep"] == 6
+
+    def test_the_example_exercises_all_three_models(
+        self, analogy_df, estimate_df
+    ):
+        # The point of this data: quantities spread widely enough that a rate
+        # term has something to regress against, so every model fits and the
+        # selection is made on merit rather than by default.
+        proj, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
+        summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
+        fitted = summary.loc[summary["Item"] == "Fitted"].iloc[0]
+        assert [fitted["LC"], fitted["Rate"], fitted["LC+Rate"]] == [
+            "Yes", "Yes", "Yes",
+        ]
+        assert ctx["rate_ok"] is True
+
+        selected = summary.loc[summary["Item"] == "SELECTED"].iloc[0]
+        assert selected["LC+Rate"] == "YES"
+
+        t_row = summary.loc[summary["Item"] == "t (rate coefficient)"].iloc[0]
+        assert abs(float(t_row["LC+Rate"])) >= M.SETTINGS["TGate"]
+
+    def test_the_fixture_matches_the_example_in_the_app(
+        self, analogy_df, estimate_df
+    ):
+        # The Load Example buttons and these fixtures must not drift apart.
+        assert [
+            (str(int(r["Lot FY"])), str(int(r["Qty"])), f"{r['AUC ($K)']:.2f}")
+            for _, r in analogy_df.iterrows()
+        ] == [tuple(row) for row in M.EXAMPLE_ANALOGY]
+        assert [
+            (str(int(r["Lot FY"])), str(int(r["Qty"])), str(r["Complexity"]))
+            for _, r in estimate_df.iterrows()
+        ] == [tuple(row) for row in M.EXAMPLE_ESTIMATE]
 
     def test_projects_one_row_per_forecast_lot(self, analogy_df, estimate_df):
         proj, _ = M.run_lot_cost_model(analogy_df, estimate_df)
         assert len(proj) == len(estimate_df)
 
-    def test_unit_cost_falls_across_the_buy(self, analogy_df, estimate_df):
+    def test_learning_curve_cost_falls_across_the_buy(
+        self, analogy_df, estimate_df
+    ):
+        # True of LC specifically, because its only driver is the midpoint,
+        # which rises with every lot. It is not true of the models carrying a
+        # rate term; see the test below.
         proj, _ = M.run_lot_cost_model(analogy_df, estimate_df)
         costs = proj["LC Unit Cost ($K)"].to_numpy()
         assert np.all(np.diff(costs) < 0)
+
+    def test_a_smaller_lot_costs_more_per_unit_under_a_rate_model(
+        self, analogy_df, estimate_df
+    ):
+        # The rate term's whole content. The buy tapers from 40 units to 10,
+        # and unit cost turns back up, which a pure learning curve cannot do.
+        proj, _ = M.run_lot_cost_model(analogy_df, estimate_df)
+        biggest = proj["Lot Quantity"].idxmax()
+        smallest = proj["Lot Quantity"].idxmin()
+        assert (
+            proj["LC+Rate Unit Cost ($K)"].iloc[smallest]
+            > proj["LC+Rate Unit Cost ($K)"].iloc[biggest]
+        )
+        assert not np.all(
+            np.diff(proj["LC+Rate Unit Cost ($K)"].to_numpy()) < 0
+        )
 
     def test_complexity_factor_scales_the_lot_cost(
         self, analogy_df, estimate_df
@@ -115,9 +179,11 @@ class TestFit:
         _, ctx = M.run_lot_cost_model(gapped, estimate_df)
         assert ctx["n_keep"] == 5      # fitted on five lots
         assert ctx["n_unit"] == 6      # but six lots' units are tracked
-        # Lot 5 must still start after lot 4's 25 units, not in place of them.
+        # Quantities are 5, 9, 14, 22, 34, 50, so lot 5 starts at unit 51.
+        # It must still start there, after lot 4's 22 units, not in place of
+        # them at unit 29.
         starts = [d["S"] for d in ctx["fit_se"]]
-        assert starts == [1, 11, 31, 81, 96]
+        assert starts == [1, 6, 15, 51, 85]
 
     def test_refuses_fewer_than_three_costed_lots(self, estimate_df):
         thin = pd.DataFrame(

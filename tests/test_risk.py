@@ -76,9 +76,17 @@ class TestIntervals:
         )
         assert result.total_lower < result.total_point < result.total_upper
 
-    def test_unit_cost_falls_across_the_buy(self, result):
-        costs = result.intervals["Unit Cost ($K)"].to_numpy()
-        assert np.all(np.diff(costs) < 0)
+    def test_the_band_tracks_the_selected_model(self, result):
+        # The example selects LC+Rate, whose unit cost turns back up on the
+        # small final lot, so this deliberately does not assert a falling
+        # curve. What must hold is that the band follows the point estimate.
+        iv = result.intervals
+        point = iv["Unit Cost ($K)"].to_numpy()
+        lower = iv["Unit Cost Lower"].to_numpy()
+        upper = iv["Unit Cost Upper"].to_numpy()
+        assert np.all(np.diff(np.sign(np.diff(point))) >= -1)  # one turn
+        np.testing.assert_array_less(lower, point)
+        np.testing.assert_array_less(point, upper)
 
     def test_a_wider_level_gives_a_wider_interval(self, fitted):
         ctx, proj, summary = fitted

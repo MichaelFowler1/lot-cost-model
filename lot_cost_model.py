@@ -2014,25 +2014,33 @@ try:
 except Exception:  # pragma: no cover - depends on the install
     risk = None
 
-# Demo data for the "Load Example" buttons. These numbers are invented:
-# they were generated from a 90% learning curve with a $1,000K first unit
-# and a little random scatter, purely so the tool has something to chew on.
+# Demo data for the "Load Example" buttons. These numbers are invented,
+# generated from an 88% learning curve with a 93% rate slope on a $1,200K
+# first unit, plus a little scatter.
+#
+# Every lot is a different size, spanning 5 to 50 units. That matters: with
+# repeated quantities there is nothing for a rate term to regress against, and
+# the Rate chart collapses into a cluster of points at two or three values.
+# Here all three models fit, the rate coefficient clears the significance
+# gate, and LC+Rate is selected on its merits.
 EXAMPLE_ANALOGY = [
-    ("2015", "10", "800.61"),
-    ("2016", "20", "639.49"),
-    ("2017", "25", "563.66"),
-    ("2018", "25", "520.05"),
-    ("2019", "15", "502.98"),
-    ("2020", "15", "487.08"),
+    ("2015", "5", "857.91"),
+    ("2016", "9", "645.57"),
+    ("2017", "14", "531.74"),
+    ("2018", "22", "437.51"),
+    ("2019", "34", "380.10"),
+    ("2020", "50", "332.21"),
 ]
 
+# The buy grows and then tapers, so the rate term does visible work: the last
+# lot is small, and its unit cost comes back up rather than continuing down.
 EXAMPLE_ESTIMATE = [
-    ("2028", "8", "1.15"),
-    ("2029", "16", "1.15"),
-    ("2030", "16", "1.15"),
-    ("2031", "16", "1.15"),
-    ("2032", "12", "1.15"),
-    ("2033", "6", "1.15"),
+    ("2028", "12", "1.15"),
+    ("2029", "20", "1.15"),
+    ("2030", "30", "1.15"),
+    ("2031", "40", "1.15"),
+    ("2032", "25", "1.15"),
+    ("2033", "10", "1.15"),
 ]
 
 
