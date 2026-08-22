@@ -163,6 +163,29 @@ about half a percent at P80 and beat both arithmetic moment-matching and a
 normal. A test bounds it, and every run says to read the program percentiles at
 that resolution.
 
+### Three more views on tab 6
+
+**Tornado** ranks elements by share of program variance, using the covariance
+decomposition `Cov(X_i, T)/Var(T)`, so the contributions add to exactly one and
+attribute correctly under correlation. This is not the same ranking as size: an
+element that is only moderately variable but moves with everything else
+contributes more than its cost share suggests. On the demo, propulsion carries
+41.8% of the variance against 37.3% of the cost.
+
+**Influence** shows leverage, Cook's distance and DFFITS for every analogy lot,
+from `cost_core`. At six lots one lot can set the slope while every summary
+statistic still looks healthy, and on the bundled data the smallest lot is
+flagged as influential in all three elements. These are flags, not verdicts:
+the largest or smallest lot in a sample has high leverage by construction, and
+dropping it for that reason alone would be indefensible.
+
+**Buy sensitivity** reprices the whole program at other buy sizes. Every
+element's quantities scale together, so two engines per aircraft and a spares
+provision keep their proportion rather than drifting, and quantities stay whole
+units. Buying 40% fewer raises unit cost by about 16% on the demo, which is the
+learning and the rate term working together and the question estimators are
+asked most often.
+
 Escalation, nonrecurring and level-of-effort elements, and per-element prior
 units are all deliberately absent for now.
 
@@ -224,7 +247,8 @@ before the rate models will even be attempted.
 
 A WBS roll-up writes a second workbook alongside it, suffixed `_program`, with
 `Program_Summary`, `Program_Elements`, `Program_By_Lot` (a stacked cost-by-year
-chart), `Program_SCurve`, and one sheet per element.
+chart), `Program_SCurve`, `Program_Tornado`, `Buy_Sensitivity`,
+`Element_Influence`, and one sheet per element.
 
 The last three appear only when `cost_core` is installed and the risk analysis
 ran.
@@ -300,7 +324,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-145 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+163 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 

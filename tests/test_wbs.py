@@ -399,3 +399,109 @@ class TestManyElements:
         assert rolled.by_lot["Program Total ($)"].sum() == pytest.approx(
             rolled.total, rel=1e-6
         )
+
+
+@risk
+class TestTornado:
+    def test_shares_add_to_one(self, simulated):
+        # The covariance decomposition Cov(X_i, T)/Var(T) sums to exactly one,
+        # which a ranking on input spread alone does not.
+        assert simulated.tornado is not None
+        assert simulated.tornado["variance_share"].sum() == pytest.approx(
+            1.0, abs=1e-9
+        )
+
+    def test_one_row_per_element_largest_first(self, simulated):
+        shares = simulated.tornado["variance_share"].to_numpy()
+        assert len(simulated.tornado) == len(simulated.elements)
+        assert np.all(np.diff(shares) <= 0)
+
+    def test_ranking_need_not_match_cost_share(self, simulated):
+        # The point of ranking on variance: contribution to spread is a
+        # different question from size.
+        by_variance = list(simulated.tornado["component"])
+        by_cost = [
+            e.name
+            for e in sorted(
+                simulated.elements, key=lambda e: e.total, reverse=True
+            )
+        ]
+        assert set(by_variance) == set(by_cost)
+
+    def test_absent_without_risk(self, rolled):
+        assert rolled.tornado is None
+
+
+@risk
+class TestInfluence:
+    def test_one_row_per_analogy_lot(self, rolled):
+        for e in rolled.elements:
+            table = wbs.influence(e)
+            assert table is not None
+            assert len(table) == e.n_lots_fitted
+
+    def test_flags_are_present_and_boolean(self, rolled):
+        table = wbs.influence(rolled.elements[0])
+        for col in ("Leverage", "Cook's D", "High leverage", "Influential"):
+            assert col in table.columns
+        assert table["Influential"].dtype == bool
+
+    def test_the_combined_table_names_its_elements(self, rolled):
+        combined = wbs.influence_table(rolled)
+        assert combined is not None
+        assert set(combined["WBS Element"]) == {
+            e.name for e in rolled.elements
+        }
+
+
+class TestBuySensitivity:
+    def test_one_row_per_factor_with_the_baseline_at_zero_change(self):
+        frame = wbs.buy_profile_sensitivity(
+            program(), factors=(0.8, 1.0, 1.25)
+        )
+        assert len(frame) == 3
+        base = frame.loc[frame["Buy Multiplier"] == 1.0].iloc[0]
+        assert base["Change vs Baseline"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_buying_more_costs_more_in_total(self):
+        frame = wbs.buy_profile_sensitivity(
+            program(), factors=(0.6, 1.0, 1.5)
+        )
+        totals = frame["Program Total ($)"].to_numpy()
+        assert np.all(np.diff(totals) > 0)
+
+    def test_buying_more_costs_less_per_unit(self):
+        # Learning plus the rate term: bigger lots are cheaper per unit.
+        frame = wbs.buy_profile_sensitivity(
+            program(), factors=(0.6, 1.0, 1.5)
+        )
+        per_unit = frame["Cost per Unit ($)"].to_numpy()
+        assert np.all(np.diff(per_unit) < 0)
+
+    def test_quantities_stay_whole_units(self):
+        # 0.6 x 12 is 7.2, and you cannot buy 7.2 airframes.
+        scaled = wbs.buy_profile_sensitivity(program(), factors=(0.6,))
+        assert float(scaled[scaled.columns[1]].iloc[0]).is_integer()
+
+    def test_the_program_is_not_modified(self):
+        prog = program()
+        before = [list(e.quantities) for e in prog.elements]
+        wbs.buy_profile_sensitivity(prog, factors=(0.5, 2.0))
+        assert [list(e.quantities) for e in prog.elements] == before
+
+    def test_an_unknown_reference_element_is_refused(self):
+        with pytest.raises(wbs.ProgramError, match="not an element"):
+            wbs.buy_profile_sensitivity(
+                program(), factors=(1.0,), reference_element="1.9 Nope"
+            )
+
+    def test_a_lot_an_element_sits_out_stays_at_zero(self):
+        late = avionics()
+        late.quantities = [0.0, 0.0] + list(AIRCRAFT[2:])
+        prog = program(airframe(), late)
+        frame = wbs.buy_profile_sensitivity(prog, factors=(1.4,))
+        # Scaling must not conjure a buy in a lot the element skips.
+        rolled = wbs.roll_up(prog, simulate=False)
+        row = [e for e in rolled.elements if e.name == late.name][0]
+        assert row.by_lot[0] == 0.0
+        assert len(frame) == 1

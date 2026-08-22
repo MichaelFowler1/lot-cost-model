@@ -31,7 +31,11 @@ from lot_cost_model import (
 )
 
 try:
-    from cost_core.lots import selected_model_name, simulate_buy
+    from cost_core.lots import (
+        influence_diagnostics,
+        selected_model_name,
+        simulate_buy,
+    )
     from cost_core.monte_carlo import (
         CostElement,
         RiskModel,
@@ -148,6 +152,8 @@ class ProgramResult:
     correlation: float | None = None
     n_iter: int | None = None
     scurve: pd.DataFrame | None = None
+    #: Variance contribution by element, largest first.
+    tornado: pd.DataFrame | None = None
     #: What treating the elements as independent would have understated.
     independence_understates_sd_by: float | None = None
     #: The closed-form 1 + rho(k-1), to check the sampler against the algebra.
@@ -353,6 +359,14 @@ def _program_risk(
         if text not in result.warnings:
             result.warnings.append(text)
 
+    try:
+        # Cov(X_i, T) / Var(T): the contributions add to one and attribute
+        # correctly under correlation, which a ranking on input spread alone
+        # does not.
+        result.tornado = sim.tornado()
+    except Exception as exc:
+        result.warnings.append(f"Could not build the tornado: {exc}")
+
     totals = np.asarray(sim.continuous_total, dtype=float)
     result.p50 = float(sim.p50)
     result.p80 = float(sim.p80)
@@ -515,7 +529,11 @@ def program_summary(result: ProgramResult) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Item", "Value"])
 
 
-def save_program_workbook(filename: str, result: ProgramResult):
+def save_program_workbook(
+    filename: str,
+    result: ProgramResult,
+    sensitivity: pd.DataFrame | None = None,
+):
     """Write the roll-up: programme first, then every element behind it.
 
     The order is deliberate. The programme total is what gets briefed, but a
@@ -525,7 +543,12 @@ def save_program_workbook(filename: str, result: ProgramResult):
     import openpyxl
     from openpyxl.chart import Reference, ScatterChart, Series
 
-    from lot_cost_model import _format_chart, _money_short, _nice_bounds
+    from lot_cost_model import (
+        _format_chart,
+        _money_axis_fmt,
+        _money_short,
+        _nice_bounds,
+    )
 
     element_table = element_summary(result)
     with pd.ExcelWriter(filename, engine="openpyxl") as writer:
@@ -542,9 +565,23 @@ def save_program_workbook(filename: str, result: ProgramResult):
             result.scurve.to_excel(
                 writer, sheet_name="Program_SCurve", index=False
             )
+        if result.tornado is not None and len(result.tornado):
+            result.tornado.to_excel(
+                writer, sheet_name="Program_Tornado", index=False
+            )
+        if sensitivity is not None and len(sensitivity):
+            sensitivity.to_excel(
+                writer, sheet_name="Buy_Sensitivity", index=False
+            )
+        infl = influence_table(result)
+        if infl is not None:
+            infl.to_excel(
+                writer, sheet_name="Element_Influence", index=False
+            )
         used = {
             "Program_Summary", "Program_Elements", "Program_By_Lot",
-            "Program_SCurve",
+            "Program_SCurve", "Program_Tornado", "Buy_Sensitivity",
+            "Element_Influence",
         }
         for r in result.elements:
             r.projections.to_excel(
@@ -584,9 +621,70 @@ def save_program_workbook(filename: str, result: ProgramResult):
         bar.y_axis.numFmt = '#,##0,,"M"' 
         ws.add_chart(bar, f"{_col_letter(len(names) + 5)}2")
 
+    if result.tornado is not None and len(result.tornado):
+        from openpyxl.chart import BarChart
+
+        wst = wb["Program_Tornado"]
+        cols = list(result.tornado.columns)
+        share_col = cols.index("variance_share") + 1
+        last_t = len(result.tornado) + 1
+        tor = BarChart()
+        tor.type = "bar"          # horizontal, which is what makes it a tornado
+        # On a horizontal bar chart openpyxl's x_axis is still the category
+        # axis, drawn down the side, and y_axis is the value axis along the
+        # bottom. Naming them the other way round leaves the shares reading
+        # as "0" under the shared numeric format.
+        _format_chart(
+            tor, f"{result.program}: share of program variance",
+            "WBS element", "Share of variance", 18, 10,
+        )
+        tor.y_axis.numFmt = "0%"
+        tor.legend = None
+        tor.series.append(
+            Series(
+                Reference(wst, min_col=share_col, min_row=1, max_row=last_t),
+                title_from_data=True,
+            )
+        )
+        tor.set_categories(
+            Reference(wst, min_col=1, min_row=2, max_row=last_t)
+        )
+        wst.add_chart(tor, f"{_col_letter(len(cols) + 2)}2")
+
+    if sensitivity is not None and len(sensitivity):
+        wss = wb["Buy_Sensitivity"]
+        cols = list(sensitivity.columns)
+        last_s = len(sensitivity) + 1
+        unit_col = cols.index("Cost per Unit ($)") + 1
+        chart = ScatterChart()
+        _format_chart(
+            chart, f"{result.program}: unit cost against buy size",
+            "Buy multiplier", "Cost per unit ($)", 18, 10,
+        )
+        chart.x_axis.numFmt = "0.0"
+        chart.legend = None
+        lo, hi = _nice_bounds(
+            float(sensitivity["Cost per Unit ($)"].min()),
+            float(sensitivity["Cost per Unit ($)"].max()),
+        )
+        chart.y_axis.numFmt = _money_axis_fmt(lo, hi)
+        chart.y_axis.scaling.min = max(0.0, lo)
+        chart.y_axis.scaling.max = hi
+        s_unit = Series(
+            values=Reference(wss, min_col=unit_col, min_row=1, max_row=last_s),
+            xvalues=Reference(wss, min_col=1, min_row=2, max_row=last_s),
+            title_from_data=True,
+        )
+        s_unit.marker.symbol = "circle"
+        s_unit.marker.size = 8
+        s_unit.smooth = False
+        chart.series.append(s_unit)
+        wss.add_chart(chart, f"{_col_letter(len(cols) + 2)}2")
+
     if result.scurve is not None and len(result.scurve):
         _add_program_scurve(wb, result, _format_chart, _money_short,
-                            _nice_bounds, ScatterChart, Series, Reference)
+                            _nice_bounds, _money_axis_fmt, ScatterChart,
+                            Series, Reference)
 
     wb.save(filename)
 
@@ -626,7 +724,7 @@ def _sheet_name(name: str, taken: set[str] | None = None) -> str:
 
 def _add_program_scurve(
     wb, result, _format_chart, _money_short, _nice_bounds,
-    ScatterChart, Series, Reference,
+    _money_axis_fmt, ScatterChart, Series, Reference,
 ):
     ws = wb["Program_SCurve"]
     last = len(result.scurve) + 1
@@ -646,13 +744,7 @@ def _add_program_scurve(
 
     lo = float(result.scurve["Program Total ($)"].min())
     hi = float(result.scurve["Program Total ($)"].max())
-    span = hi - lo
-    if hi >= 1e9:
-        curve.x_axis.numFmt = '#,##0.0,,,"B"' if span < 1e10 else '#,##0,,,"B"'
-    elif hi >= 1e6:
-        curve.x_axis.numFmt = '#,##0.0,,"M"' if span < 1e7 else '#,##0,,"M"'
-    else:
-        curve.x_axis.numFmt = '#,##0,"K"'
+    curve.x_axis.numFmt = _money_axis_fmt(lo, hi)
     nice_lo, nice_hi = _nice_bounds(lo, hi)
     curve.x_axis.scaling.min = max(0.0, nice_lo)
     curve.x_axis.scaling.max = nice_hi
@@ -700,3 +792,135 @@ def _add_program_scurve(
         curve.series.append(mark)
 
     ws.add_chart(curve, "I2")
+
+
+def influence(result: ElementResult) -> pd.DataFrame | None:
+    """Which analogy lot is actually carrying this element's fit.
+
+    Six analogy lots is normal, and at that size one lot can set the slope
+    while every summary statistic still looks healthy. Leverage says which lot
+    is unusual among the predictors; Cook's distance says which one is moving
+    the fit. Both are flags rather than verdicts: the largest or smallest lot
+    in a sample has high leverage by construction, and dropping it for that
+    reason alone would be indefensible.
+    """
+    if not RISK_AVAILABLE:
+        return None
+    try:
+        return influence_diagnostics(result.ctx, result.model)
+    except Exception:
+        return None
+
+
+def buy_profile_sensitivity(
+    program: Program,
+    factors: "list[float] | tuple[float, ...]" = (0.6, 0.8, 1.0, 1.2, 1.5),
+    overrides: dict | None = None,
+    reference_element: str | None = None,
+) -> pd.DataFrame:
+    """Reprice the whole programme at several buy sizes.
+
+    Every element's lot quantities scale together, so a two-per-aircraft
+    engine count and a spares provision keep their proportion to the end item
+    rather than drifting. Quantities are whole units, and a lot an element
+    sits out stays at zero.
+
+    This is the question the rate term exists to answer, and the reason unit
+    cost moves at all: buying fewer units per lot pushes the cost of each one
+    up, on top of the learning that is lost by building fewer of them.
+
+    Args:
+        program: The programme to reprice. It is not modified.
+        factors: Multipliers on the baseline buy.
+        overrides: Settings passed through to the engine.
+        reference_element: Which element counts as the end item for the
+            per-unit column. Defaults to the first.
+
+    Raises:
+        ProgramError: If a factor prices out to nothing, or the reference
+            element is not in the programme.
+    """
+    program.validate()
+    names = [e.name for e in program.elements]
+    reference = reference_element or names[0]
+    if reference not in names:
+        raise ProgramError(
+            f"{reference!r} is not an element of this programme. Pick one of "
+            f"{names}."
+        )
+
+    baseline_total = None
+    rows = []
+    for factor in factors:
+        scaled = Program(
+            name=program.name,
+            fiscal_years=list(program.fiscal_years),
+            elements=[
+                Element(
+                    name=el.name,
+                    analogy=el.analogy,
+                    # Round to whole units; a lot at zero stays there.
+                    quantities=[
+                        0.0 if q <= 0 else float(max(1, round(q * factor)))
+                        for q in el.quantities
+                    ],
+                    complexity=el.complexity,
+                    settings=dict(el.settings),
+                )
+                for el in program.elements
+            ],
+        )
+        try:
+            priced = roll_up(scaled, overrides, simulate=False)
+        except ProgramError as exc:
+            raise ProgramError(f"At {factor:g}x the buy: {exc}") from exc
+
+        end_items = int(
+            sum(
+                e.projections["Lot Quantity"].sum()
+                for e in priced.elements
+                if e.name == reference
+            )
+        )
+        if baseline_total is None and factor == 1.0:
+            baseline_total = priced.total
+
+        rows.append(
+            {
+                "Buy Multiplier": factor,
+                f"{reference} Units": end_items,
+                "Program Total ($)": round(priced.total, 2),
+                "Cost per Unit ($)": round(priced.total / end_items, 2)
+                if end_items
+                else float("nan"),
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    if baseline_total:
+        frame["Change vs Baseline"] = (
+            frame["Program Total ($)"] / baseline_total - 1.0
+        ).round(4)
+        base_unit = frame.loc[
+            frame["Buy Multiplier"] == 1.0, "Cost per Unit ($)"
+        ]
+        if len(base_unit):
+            frame["Unit Cost vs Baseline"] = (
+                frame["Cost per Unit ($)"] / float(base_unit.iloc[0]) - 1.0
+            ).round(4)
+    return frame
+
+
+def influence_table(result: ProgramResult) -> pd.DataFrame | None:
+    """Every element's influence diagnostics in one table."""
+    frames = []
+    for r in result.elements:
+        one = influence(r)
+        if one is None or one.empty:
+            continue
+        one = one.copy()
+        one.insert(0, "WBS Element", r.name)
+        frames.append(one)
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)

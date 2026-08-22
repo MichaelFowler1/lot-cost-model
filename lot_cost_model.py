@@ -1585,6 +1585,23 @@ def _nice_bounds(lo: float, hi: float, pad_frac: float = 0.15):
     return math.floor(lo / step) * step, math.ceil(hi / step) * step
 
 
+def _money_axis_fmt(lo: float, hi: float) -> str:
+    """Excel number format for a money axis covering lo to hi.
+
+    Each comma in an Excel format divides by a thousand. The decimal place
+    appears only for a narrow spread, where rounding to whole units prints
+    the same label several times in a row.
+    """
+    span = abs(hi - lo)
+    if abs(hi) >= 1e9:
+        return '#,##0.0,,,"B"' if span < 1e10 else '#,##0,,,"B"'
+    if abs(hi) >= 1e6:
+        return '#,##0.0,,"M"' if span < 1e7 else '#,##0,,"M"'
+    if abs(hi) >= 1e3:
+        return '#,##0.0,"K"' if span < 1e4 else '#,##0,"K"'
+    return "#,##0"
+
+
 def _money_short(value: float) -> str:
     """Compact money for a chart label: $250.0M rather than 250,000,000."""
     v = float(value)
@@ -1909,19 +1926,7 @@ def save_complete_excel_workbook(
         # to whole units would print the same label several times over.
         lo_x = float(risk_scurve_df["Buy Total ($)"].min())
         hi_x = float(risk_scurve_df["Buy Total ($)"].max())
-        span = hi_x - lo_x
-        if hi_x >= 1e9:
-            curve.x_axis.numFmt = (
-                '#,##0.0,,,"B"' if span < 1e10 else '#,##0,,,"B"'
-            )
-        elif hi_x >= 1e6:
-            curve.x_axis.numFmt = (
-                '#,##0.0,,"M"' if span < 1e7 else '#,##0,,"M"'
-            )
-        elif hi_x >= 1e3:
-            curve.x_axis.numFmt = '#,##0,"K"'
-        else:
-            curve.x_axis.numFmt = "#,##0"
+        curve.x_axis.numFmt = _money_axis_fmt(lo_x, hi_x)
         # The P50 and P80 markers are named in the legend rather than by data
         # labels beside them. Excel can only place a label immediately next to
         # its point, and the curve runs through the point, so on a steep
@@ -2246,6 +2251,15 @@ def read_run_file(path: str) -> dict:
     return data
 
 
+def _scroll(parent, tree):
+    """Pack a treeview with a vertical scrollbar beside it."""
+    bar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=bar.set)
+    bar.pack(side="right", fill="y")
+    tree.pack(fill="both", expand=True)
+    return bar
+
+
 class LotCostApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -2554,8 +2568,19 @@ class LotCostApp(tk.Tk):
             bar, textvariable=self.var_prog_status, style="Sub.TLabel"
         ).pack(side="left", padx=12)
 
-        panes = ttk.Panedwindow(f, orient="vertical")
-        panes.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._build_program_views(f)
+
+    def _build_program_views(self, parent):
+        """Roll-up, tornado, influence and sensitivity, as inner tabs."""
+        inner = ttk.Notebook(parent)
+        inner.pack(fill="both", expand=True)
+        self.prog_views = inner
+
+        # -- roll-up ---------------------------------------------------------
+        page = ttk.Frame(inner)
+        inner.add(page, text="  Roll-up  ")
+        panes = ttk.Panedwindow(page, orient="vertical")
+        panes.pack(fill="both", expand=True)
 
         top = ttk.Frame(panes)
         cols = (
@@ -2563,19 +2588,14 @@ class LotCostApp(tk.Tk):
             "Cost Before Risk ($)", "Share", "P80 With Risk ($)",
         )
         self.tree_prog_elements = ttk.Treeview(
-            top, columns=cols, show="headings", height=8
+            top, columns=cols, show="headings", height=7
         )
-        for c, w in zip(cols, (190, 80, 50, 90, 70, 160, 70, 150)):
+        for c, w in zip(cols, (180, 75, 45, 85, 65, 155, 65, 145)):
             self.tree_prog_elements.heading(c, text=c)
             self.tree_prog_elements.column(
                 c, width=w, anchor="w" if c == "WBS Element" else "e"
             )
-        sv = ttk.Scrollbar(
-            top, orient="vertical", command=self.tree_prog_elements.yview
-        )
-        self.tree_prog_elements.configure(yscrollcommand=sv.set)
-        sv.pack(side="right", fill="y")
-        self.tree_prog_elements.pack(fill="both", expand=True)
+        _scroll(top, self.tree_prog_elements)
         self.tree_prog_elements.tag_configure(
             "total", background="#dff0d8", font=("Segoe UI", 9, "bold")
         )
@@ -2589,16 +2609,202 @@ class LotCostApp(tk.Tk):
         self.tree_prog_summary.heading("Value", text="Value")
         self.tree_prog_summary.column("Item", width=280, anchor="w")
         self.tree_prog_summary.column("Value", width=640, anchor="w")
-        sv2 = ttk.Scrollbar(
-            bot, orient="vertical", command=self.tree_prog_summary.yview
-        )
-        self.tree_prog_summary.configure(yscrollcommand=sv2.set)
-        sv2.pack(side="right", fill="y")
-        self.tree_prog_summary.pack(fill="both", expand=True)
+        _scroll(bot, self.tree_prog_summary)
         self.tree_prog_summary.tag_configure(
             "head", font=("Segoe UI", 9, "bold")
         )
         panes.add(bot, weight=3)
+
+        # -- tornado ---------------------------------------------------------
+        page = ttk.Frame(inner)
+        inner.add(page, text="  Tornado  ")
+        ttk.Label(
+            page,
+            text=(
+                "Share of program variance, largest first. This is not the "
+                "same ranking as size: an element that is only moderately\n"
+                "variable but moves with everything else contributes more "
+                "than its cost share suggests. Needs risk applied."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(6, 4))
+        cols = ("Component", "Share of Variance", "Std Dev ($)")
+        self.tree_prog_tornado = ttk.Treeview(
+            page, columns=cols, show="headings", height=10
+        )
+        for c, w in zip(cols, (300, 160, 160)):
+            self.tree_prog_tornado.heading(c, text=c)
+            self.tree_prog_tornado.column(
+                c, width=w, anchor="w" if c == "Component" else "e"
+            )
+        _scroll(page, self.tree_prog_tornado)
+
+        # -- influence -------------------------------------------------------
+        page = ttk.Frame(inner)
+        inner.add(page, text="  Influence  ")
+        ttk.Label(
+            page,
+            text=(
+                "Which analogy lot is carrying each element's fit. At six "
+                "lots one can set the slope while every summary\nstatistic "
+                "still looks healthy. Flags, not verdicts: the largest or "
+                "smallest lot has high leverage by construction."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(6, 4))
+        cols = ("WBS Element", "Lot", "Qty", "% Error", "Leverage", "Cook's D")
+        self.tree_prog_influence = ttk.Treeview(
+            page, columns=cols, show="headings", height=12
+        )
+        for c, w in zip(cols, (200, 120, 70, 90, 90, 90)):
+            self.tree_prog_influence.heading(c, text=c)
+            self.tree_prog_influence.column(
+                c, width=w, anchor="w" if c == "WBS Element" else "e"
+            )
+        _scroll(page, self.tree_prog_influence)
+        self.tree_prog_influence.tag_configure("flag", background="#fde9d9")
+
+        # -- buy sensitivity -------------------------------------------------
+        page = ttk.Frame(inner)
+        inner.add(page, text="  Buy Sensitivity  ")
+        ttk.Label(
+            page,
+            text=(
+                "Reprice the whole program at other buy sizes. Every "
+                "element's quantities scale together, so engines per\n"
+                "aircraft and spares keep their proportion. Buying fewer "
+                "pushes unit cost up, which is the rate term at work."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(6, 4))
+        row = ttk.Frame(page)
+        row.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Label(row, text="Buy multipliers:").pack(side="left")
+        self.var_prog_factors = tk.StringVar(value="0.6, 0.8, 1.0, 1.2, 1.5")
+        ttk.Entry(row, textvariable=self.var_prog_factors, width=30).pack(
+            side="left", padx=6
+        )
+        ttk.Button(
+            row, text="Run Buy Sensitivity", command=self.run_sensitivity
+        ).pack(side="left")
+        self.tree_prog_sens = ttk.Treeview(
+            page, columns=("a",), show="headings", height=10
+        )
+        _scroll(page, self.tree_prog_sens)
+        self.tree_prog_sens.tag_configure("base", background="#dff0d8")
+
+    def _show_program_extras(self, result):
+        """Fill the tornado and influence views from a finished roll-up."""
+        self.tree_prog_tornado.delete(*self.tree_prog_tornado.get_children())
+        if result.tornado is not None and len(result.tornado):
+            for _, r in result.tornado.iterrows():
+                self.tree_prog_tornado.insert(
+                    "",
+                    "end",
+                    values=(
+                        r.get("component", ""),
+                        f"{float(r.get('variance_share', 0)):.1%}",
+                        f"{float(r.get('std_dev', 0)):,.0f}",
+                    ),
+                )
+        else:
+            self.tree_prog_tornado.insert(
+                "", "end",
+                values=("Tick 'Also apply risk' to rank the elements.",
+                        "", ""),
+            )
+
+        self.tree_prog_influence.delete(
+            *self.tree_prog_influence.get_children()
+        )
+        table = wbs.influence_table(result)
+        if table is None or table.empty:
+            self.tree_prog_influence.insert(
+                "", "end",
+                values=("Influence diagnostics need cost_core installed.",
+                        "", "", "", "", ""),
+            )
+            return
+        cook_col = "Cook's D"
+        for _, r in table.iterrows():
+            flagged = bool(r.get("Influential", False)) or bool(
+                r.get("High leverage", False)
+            )
+            self.tree_prog_influence.insert(
+                "",
+                "end",
+                values=(
+                    r.get("WBS Element", ""),
+                    r.get("Lot", ""),
+                    f"{float(r.get('Qty', 0)):,.0f}",
+                    f"{float(r.get('% error', 0)):+.2f}%",
+                    f"{float(r.get('Leverage', 0)):.3f}",
+                    f"{float(r.get(cook_col, 0)):.3f}",
+                ),
+                tags=("flag",) if flagged else (),
+            )
+
+    def run_sensitivity(self):
+        """Reprice the whole program at several buy sizes."""
+        if wbs is None:
+            return
+        self.var_prog_status.set("Repricing at each buy size...")
+        self.update_idletasks()
+        try:
+            factors = [
+                float(x)
+                for x in self.var_prog_factors.get().replace(";", ",").split(",")
+                if x.strip()
+            ]
+            if not factors:
+                raise ValueError("Give at least one buy multiplier.")
+            frame = wbs.buy_profile_sensitivity(
+                self.build_program(), factors, self._collect_overrides()
+            )
+        except (ValueError, wbs.ProgramError) as exc:
+            messagebox.showerror("Buy sensitivity", str(exc))
+            self.var_prog_status.set("Sensitivity did not run.")
+            return
+        except Exception as exc:
+            messagebox.showerror(
+                "Buy sensitivity failed", f"{type(exc).__name__}: {exc}"
+            )
+            self.var_prog_status.set("Sensitivity failed.")
+            return
+
+        self.sensitivity_result = frame
+        cols = list(frame.columns)
+        self.tree_prog_sens["columns"] = cols
+        for c in cols:
+            self.tree_prog_sens.heading(c, text=c)
+            self.tree_prog_sens.column(
+                c, width=160 if "$" in c else 120, anchor="e"
+            )
+        self.tree_prog_sens.delete(*self.tree_prog_sens.get_children())
+        for _, r in frame.iterrows():
+            values = []
+            for c in cols:
+                v = r[c]
+                if c == "Buy Multiplier":
+                    values.append(f"{float(v):.2f}x")
+                elif "vs Baseline" in c:
+                    values.append(f"{float(v):+.1%}")
+                elif "$" in c:
+                    values.append(f"{float(v):,.2f}")
+                else:
+                    values.append(f"{float(v):,.0f}")
+            self.tree_prog_sens.insert(
+                "", "end", values=values,
+                tags=("base",) if float(r["Buy Multiplier"]) == 1.0 else (),
+            )
+        self.prog_views.select(3)
+        self.var_prog_status.set(
+            f"Repriced at {len(frame)} buy sizes; the baseline row is "
+            "highlighted."
+        )
 
     def build_program(self):
         """Assemble the programme from what is entered, without pricing it."""
@@ -2737,6 +2943,7 @@ class LotCostApp(tk.Tk):
 
         self.program_result = result
         self._show_program(result)
+        self._show_program_extras(result)
         self.nb.select(self.tab_program)
         self.var_prog_status.set(
             f"{len(result.elements)} element(s). Total before risk "
@@ -2794,7 +3001,9 @@ class LotCostApp(tk.Tk):
         target = f"{base}_program{ext or '.xlsx'}"
         while True:
             try:
-                wbs.save_program_workbook(target, result)
+                wbs.save_program_workbook(
+                    target, result, getattr(self, 'sensitivity_result', None)
+                )
                 break
             except PermissionError:
                 if not messagebox.askretrycancel(
