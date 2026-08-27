@@ -189,8 +189,38 @@ units. Buying 40% fewer raises unit cost by about 16% on the demo, which is the
 learning and the rate term working together and the question estimators are
 asked most often.
 
-Escalation, nonrecurring and level-of-effort elements, and per-element prior
-units are all deliberately absent for now.
+### Three kinds of element
+
+A WBS is not all hardware, and forcing a learning curve onto something that
+does not learn is fitting a shape the work does not have. So an element is one
+of three things, chosen when you add it:
+
+**Priced from its own lots.** Hardware with an analogy history. Gets its own
+curve, its own model selection, its own quantity per lot.
+
+**A percentage of other elements.** Systems engineering and program management
+are the usual cases: they scale with the hardware they support. The factor is
+applied lot by lot rather than to the total, so engineering inherits the
+phasing of the hardware rather than being spread flat. Factors can sit on other
+factors, which is how PM on hardware-plus-SE actually works, so elements are
+priced in dependency order. A basis naming something that does not exist, an
+element used as its own basis, and a circle between factors are each refused by
+name before anything is priced.
+
+**A cost entered lot by lot.** Tooling, qualification, anything that happens
+once. No curve, no quantity, just the money in the lots it falls in.
+
+Under risk the derived kinds inherit uncertainty rather than inventing it. A
+factor is computed as its exact share of the same correlated draws its basis
+came from, so its correlation with that basis is 1 by construction, which is
+both true and stronger than any correlation the model could be told to assume.
+An amount is carried as entered and contributes no variance, because nobody
+measured any; it is still in every percentile, it just does not move. The
+tornado covers all three kinds and still sums to one, with amount elements
+landing at exactly zero.
+
+Inflation is assumed already applied to every element. Escalation and
+per-element prior units remain deliberately absent.
 
 ## Saving a run
 
@@ -327,7 +357,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-163 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+194 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 

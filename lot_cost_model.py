@@ -2296,6 +2296,7 @@ class LotCostApp(tk.Tk):
         self._switching = False
 
         self._build_element_bar()
+        self._build_kind_bar(self)
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=12)
@@ -2811,40 +2812,75 @@ class LotCostApp(tk.Tk):
         )
 
     def build_program(self):
-        """Assemble the programme from what is entered, without pricing it."""
+        """Assemble the programme from what is entered, without pricing it.
+
+        The shared schedule comes from the first element that has one. A
+        factor element has no lots of its own, so it does not contribute a
+        schedule and does not have to match one.
+        """
         self._capture_element()
         elements = []
-        schedule = []
-        for el in self.elements:
-            analogy_rows = [r for r in el["analogy"] if any(r)]
-            estimate_rows = [r for r in el["estimate"] if any(r)]
-            if not analogy_rows:
-                raise ValueError(
-                    f"{el['name']} has no analogy lots. Every element needs "
-                    "its own history to fit a curve to."
-                )
-            if not estimate_rows:
-                raise ValueError(f"{el['name']} has no forecast lots.")
+        schedule: list[int] = []
+        schedule_from = ""
 
-            analogy = self._analogy_frame(analogy_rows, el["name"])
-            years, qty, cf = self._estimate_columns(estimate_rows, el["name"])
+        for el in self.elements:
+            kind = el.get("kind", "fitted")
+            estimate_rows = [r for r in el["estimate"] if any(r)]
+
+            if kind == "factor":
+                elements.append(
+                    wbs.factor_of(
+                        el["name"],
+                        float(el.get("factor", 0.0)),
+                        list(el.get("basis") or []) or None,
+                    )
+                )
+                continue
+
+            if not estimate_rows:
+                raise ValueError(
+                    f"{el['name']} has no forecast lots."
+                    if kind == "fitted"
+                    else f"{el['name']} has no lot costs. Put the cost of "
+                    "each lot in the Lot Quantity column on tab 2."
+                )
+            years, values, cf = self._estimate_columns(
+                estimate_rows, el["name"]
+            )
             if not schedule:
-                schedule = years
+                schedule, schedule_from = years, el["name"]
             elif len(years) != len(schedule):
                 raise ValueError(
-                    f"{el['name']} has {len(years)} forecast lots but "
-                    f"{self.elements[0]['name']} has {len(schedule)}. Every "
-                    "element is priced against one shared schedule, so a lot "
-                    "an element sits out is a quantity of zero rather than a "
-                    "missing row."
+                    f"{el['name']} has {len(years)} lots but "
+                    f"{schedule_from} has {len(schedule)}. Every element is "
+                    "priced against one shared schedule, so a lot an element "
+                    "sits out is a zero rather than a missing row."
+                )
+
+            if kind == "amount":
+                elements.append(wbs.flat_amount(el["name"], values))
+                continue
+
+            analogy_rows = [r for r in el["analogy"] if any(r)]
+            if not analogy_rows:
+                raise ValueError(
+                    f"{el['name']} has no analogy lots. A fitted element "
+                    "needs its own history to fit a curve to. If it has no "
+                    "history, make it an amount or a factor instead."
                 )
             elements.append(
-                wbs.Element(
-                    name=el["name"],
-                    analogy=analogy,
-                    quantities=qty,
-                    complexity=cf,
+                wbs.fitted(
+                    el["name"],
+                    self._analogy_frame(analogy_rows, el["name"]),
+                    values,
+                    cf,
                 )
+            )
+
+        if not schedule:
+            raise ValueError(
+                "No element has a lot schedule. A programme of factors alone "
+                "has nothing to be a percentage of."
             )
         return wbs.Program(
             name=self.var_program.get().strip() or "unnamed program",
@@ -3067,8 +3103,169 @@ class LotCostApp(tk.Tk):
             bar, textvariable=self.var_element_hint, style="Sub.TLabel"
         ).pack(side="left", padx=12)
 
-    def _blank_element(self, name: str) -> dict:
-        return {"name": name, "analogy": [], "estimate": []}
+    def _build_kind_bar(self, parent):
+        """Kind-specific controls, shown only for the kind in hand."""
+        self.kind_bar = ttk.Frame(parent)
+        self.kind_bar.pack(fill="x", padx=12, pady=(0, 4))
+
+        self.var_kind_note = tk.StringVar(value="")
+        self.lbl_kind = ttk.Label(
+            self.kind_bar, textvariable=self.var_kind_note, style="Sub.TLabel"
+        )
+        self.lbl_kind.pack(side="left")
+
+        self.factor_box = ttk.Frame(self.kind_bar)
+        ttk.Label(self.factor_box, text="Percentage:").pack(side="left")
+        self.var_factor_pct = tk.StringVar(value="8.0")
+        ent = ttk.Entry(self.factor_box, textvariable=self.var_factor_pct,
+                        width=8)
+        ent.pack(side="left", padx=(4, 2))
+        ttk.Label(self.factor_box, text="%").pack(side="left")
+        ttk.Button(
+            self.factor_box, text="Choose what it applies to...",
+            command=self.choose_basis,
+        ).pack(side="left", padx=8)
+        self.var_basis_note = tk.StringVar(value="")
+        ttk.Label(
+            self.factor_box, textvariable=self.var_basis_note,
+            style="Sub.TLabel",
+        ).pack(side="left")
+        for var in (self.var_factor_pct,):
+            var.trace_add("write", lambda *_: self._capture_element())
+
+    def _refresh_kind_bar(self):
+        """Show the controls the current element's kind needs."""
+        if not self.elements:
+            return
+        el = self.elements[self.current_element]
+        kind = el.get("kind", "fitted")
+        self.factor_box.pack_forget()
+
+        if kind == "fitted":
+            self.var_kind_note.set(
+                "Fitted element: enter its analogy lots on tab 1 and its "
+                "quantity per lot on tab 2."
+            )
+        elif kind == "amount":
+            self.var_kind_note.set(
+                "Amount element: no curve. Put the cost of each lot in the "
+                "Lot Quantity column on tab 2; tab 1 is not used."
+            )
+        else:
+            self.var_kind_note.set("Factor element: ")
+            self.factor_box.pack(side="left")
+            self.var_factor_pct.set(
+                f"{float(el.get('factor', 0.08)) * 100:g}"
+            )
+            basis = el.get("basis") or []
+            self.var_basis_note.set(
+                "of every fitted element" if not basis
+                else "of " + ", ".join(basis)
+            )
+
+    def choose_basis(self):
+        """Pick which elements this factor is a percentage of."""
+        el = self.elements[self.current_element]
+        others = [
+            e["name"] for e in self.elements if e["name"] != el["name"]
+        ]
+        if not others:
+            messagebox.showinfo(
+                "Nothing to apply to",
+                "Add the elements this is a percentage of first.",
+            )
+            return
+
+        win = tk.Toplevel(self)
+        win.title(f"What is {el['name']} a percentage of?")
+        win.transient(self)
+        win.grab_set()
+        ttk.Label(
+            win,
+            text=(
+                "Tick the elements it applies to. Tick nothing to mean every "
+                "fitted element,\nwhich is the usual reading of 'a percentage "
+                "of the hardware'."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+
+        current = set(el.get("basis") or [])
+        vars_ = {}
+        body = ttk.Frame(win)
+        body.pack(fill="both", expand=True, padx=16)
+        for name in others:
+            v = tk.BooleanVar(value=name in current)
+            vars_[name] = v
+            kind = next(
+                (e.get("kind", "fitted") for e in self.elements
+                 if e["name"] == name), "fitted"
+            )
+            ttk.Checkbutton(
+                body, text=f"{name}   ({kind})", variable=v
+            ).pack(anchor="w")
+
+        def apply():
+            chosen = [n for n, v in vars_.items() if v.get()]
+            el["basis"] = chosen
+            self._refresh_kind_bar()
+            win.destroy()
+
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=12, pady=10)
+        ttk.Button(bar, text="OK", command=apply).pack(side="right")
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(
+            side="right", padx=6
+        )
+        win.wait_window()
+
+    def _ask_kind(self) -> str | None:
+        """Which of the three shapes this new element takes."""
+        win = tk.Toplevel(self)
+        win.title("What kind of element?")
+        win.transient(self)
+        win.grab_set()
+        choice = tk.StringVar(value="fitted")
+        for value, label, blurb in (
+            ("fitted", "Priced from its own lots",
+             "Hardware with an analogy history. Gets its own learning curve."),
+            ("factor", "A percentage of other elements",
+             "Systems engineering, programme management. Scales with what it "
+             "supports."),
+            ("amount", "A cost entered lot by lot",
+             "Tooling, qualification. Happens once and follows no curve."),
+        ):
+            ttk.Radiobutton(
+                win, text=label, value=value, variable=choice
+            ).pack(anchor="w", padx=16, pady=(10, 0))
+            ttk.Label(win, text="      " + blurb, style="Sub.TLabel").pack(
+                anchor="w", padx=16
+            )
+        out = {}
+
+        def ok():
+            out["kind"] = choice.get()
+            win.destroy()
+
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=12, pady=12)
+        ttk.Button(bar, text="OK", command=ok).pack(side="right")
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(
+            side="right", padx=6
+        )
+        win.wait_window()
+        return out.get("kind")
+
+    def _blank_element(self, name: str, kind: str = "fitted") -> dict:
+        return {
+            "name": name,
+            "kind": kind,
+            "analogy": [],
+            "estimate": [],
+            "factor": 0.08,
+            "basis": [],
+        }
 
     def _capture_element(self):
         """Copy what is on screen into the element it belongs to."""
@@ -3077,6 +3274,11 @@ class LotCostApp(tk.Tk):
         el = self.elements[self.current_element]
         el["analogy"] = self.grid_analogy.get_rows()
         el["estimate"] = self.grid_estimate.get_rows()
+        if el.get("kind") == "factor":
+            try:
+                el["factor"] = float(self.var_factor_pct.get()) / 100.0
+            except (ValueError, AttributeError):
+                pass
 
     def _show_element(self, index: int):
         self._switching = True
@@ -3092,6 +3294,7 @@ class LotCostApp(tk.Tk):
             self.var_element.set(el["name"])
         finally:
             self._switching = False
+        self._refresh_kind_bar()
 
     def _refresh_element_list(self, select: int | None = None):
         names = [e["name"] for e in self.elements]
@@ -3124,11 +3327,14 @@ class LotCostApp(tk.Tk):
         return f"{base} ({n})"
 
     def add_element(self):
+        kind = self._ask_kind()
+        if not kind:
+            return
         name = self._ask_name("Add a WBS element", "Element name:")
         if not name:
             return
         self._capture_element()
-        fresh = self._blank_element(self._unique_element_name(name))
+        fresh = self._blank_element(self._unique_element_name(name), kind)
         # Carry the buy schedule across with no quantities, so the fiscal
         # years stay in step and only the counts have to be filled in.
         current = self.elements[self.current_element]["estimate"]
@@ -3136,10 +3342,14 @@ class LotCostApp(tk.Tk):
         self.elements.append(fresh)
         self._refresh_element_list(len(self.elements) - 1)
         self.nb.select(self.tab_analogy)
-        self.var_status.set(
-            f"Added {fresh['name']}. Enter its analogy lots and its "
-            "quantity for each lot."
-        )
+        hint = {
+            "fitted": "Enter its analogy lots and its quantity for each lot.",
+            "amount": "Put the cost of each lot in the Lot Quantity column "
+                      "on tab 2.",
+            "factor": "Set its percentage and what it applies to, above the "
+                      "tabs.",
+        }[kind]
+        self.var_status.set(f"Added {fresh['name']}. {hint}")
 
     def rename_element(self):
         if not self.elements:
@@ -3223,8 +3433,11 @@ class LotCostApp(tk.Tk):
             "elements": [
                 {
                     "name": el["name"],
+                    "kind": el.get("kind", "fitted"),
                     "analogy_lots": el["analogy"],
                     "estimate_lots": el["estimate"],
+                    "factor": el.get("factor", 0.08),
+                    "basis": list(el.get("basis") or []),
                 }
                 for el in self.elements
             ],
@@ -3243,8 +3456,12 @@ class LotCostApp(tk.Tk):
             self.elements = [
                 {
                     "name": e.get("name") or f"Element {i + 1}",
+                    # A file written before the kinds existed is all fitted.
+                    "kind": e.get("kind", "fitted"),
                     "analogy": [list(r) for r in e.get("analogy_lots", [])],
                     "estimate": [list(r) for r in e.get("estimate_lots", [])],
+                    "factor": float(e.get("factor", 0.08)),
+                    "basis": list(e.get("basis") or []),
                 }
                 for i, e in enumerate(saved)
             ]
@@ -3252,10 +3469,13 @@ class LotCostApp(tk.Tk):
             self.elements = [
                 {
                     "name": "Element 1",
+                    "kind": "fitted",
                     "analogy": [list(r) for r in data.get("analogy_lots", [])],
                     "estimate": [
                         list(r) for r in data.get("estimate_lots", [])
                     ],
+                    "factor": 0.08,
+                    "basis": [],
                 }
             ]
         self.current_element = 0

@@ -294,6 +294,9 @@ class TestElementManagement:
         )
         app._capture_element()
 
+        # add_element now asks for the kind first, and both dialogs are
+        # modal, so both have to be answered for the test to return.
+        monkeypatch.setattr(app, "_ask_kind", lambda: "fitted")
         monkeypatch.setattr(app, "_ask_name", lambda *a, **k: "Propulsion")
         app.add_element()
 
@@ -307,6 +310,7 @@ class TestElementManagement:
         wipe(app)
         app.elements = [app._blank_element("Airframe")]
         app._refresh_element_list(0)
+        monkeypatch.setattr(app, "_ask_kind", lambda: "fitted")
         monkeypatch.setattr(app, "_ask_name", lambda *a, **k: "Airframe")
         app.add_element()
         assert len({e["name"] for e in app.elements}) == len(app.elements)
@@ -417,3 +421,102 @@ class TestRollUpFillsTheResultsTab:
         app._refresh_element_list(1)
         app.run_program()
         assert "1.2 Propulsion" in app.lbl_result.cget("text")
+
+
+class TestElementKindsInTheWindow:
+    """The three kinds have to survive the window, not just the engine."""
+
+    def test_a_new_element_carries_the_kind_that_was_chosen(
+        self, app, monkeypatch
+    ):
+        wipe(app)
+        app.elements = [app._blank_element("1.1 Airframe")]
+        app._refresh_element_list(0)
+        monkeypatch.setattr(app, "_ask_kind", lambda: "factor")
+        monkeypatch.setattr(app, "_ask_name", lambda *a, **k: "1.4 SE")
+        app.add_element()
+        assert app.elements[-1]["kind"] == "factor"
+
+    def test_the_kind_bar_follows_the_selected_element(self, app):
+        wipe(app)
+        app.elements = [
+            app._blank_element("1.1 Airframe"),
+            app._blank_element("1.4 SE", "factor"),
+            app._blank_element("1.6 Tooling", "amount"),
+        ]
+        app._refresh_element_list(0)
+        assert "analogy lots" in app.var_kind_note.get()
+        app._refresh_element_list(1)
+        assert "Factor" in app.var_kind_note.get()
+        app._refresh_element_list(2)
+        assert "no curve" in app.var_kind_note.get()
+
+    def test_kinds_survive_the_save_and_reload(self, app):
+        wipe(app)
+        app.elements = [
+            {"name": "1.1 Airframe", "kind": "fitted",
+             "analogy": [list(r) for r in M.EXAMPLE_ANALOGY],
+             "estimate": [list(r) for r in M.EXAMPLE_ESTIMATE],
+             "factor": 0.08, "basis": []},
+            {"name": "1.4 SE", "kind": "factor", "analogy": [],
+             "estimate": [], "factor": 0.12,
+             "basis": ["1.1 Airframe"]},
+        ]
+        app._refresh_element_list(0)
+        state = app.run_state()
+
+        wipe(app)
+        app.elements = [app._blank_element("wiped")]
+        app._refresh_element_list(0)
+        app.apply_run_state(state)
+
+        assert [e["kind"] for e in app.elements] == ["fitted", "factor"]
+        se = app.elements[1]
+        assert se["factor"] == pytest.approx(0.12)
+        assert se["basis"] == ["1.1 Airframe"]
+
+    def test_a_program_of_the_three_kinds_prices_from_the_window(self, app):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        fy = [r[0] for r in M.EXAMPLE_ESTIMATE]
+        app.elements = [
+            {"name": "1.1 Airframe", "kind": "fitted",
+             "analogy": [list(r) for r in M.EXAMPLE_ANALOGY],
+             "estimate": [list(r) for r in M.EXAMPLE_ESTIMATE],
+             "factor": 0.08, "basis": []},
+            {"name": "1.4 SE", "kind": "factor", "analogy": [],
+             "estimate": [], "factor": 0.10, "basis": []},
+            {"name": "1.6 Tooling", "kind": "amount", "analogy": [],
+             "estimate": [[f, "1000000", ""] for f in fy],
+             "factor": 0.08, "basis": []},
+        ]
+        app._refresh_element_list(0)
+
+        program = app.build_program()
+        assert [e.kind for e in program.elements] == [
+            "fitted", "factor", "amount"
+        ]
+        rolled = M.wbs.roll_up(program, simulate=False)
+        by = {r.name: r for r in rolled.elements}
+        assert by["1.4 SE"].total == pytest.approx(
+            0.10 * by["1.1 Airframe"].total, rel=1e-9
+        )
+        assert by["1.6 Tooling"].total == pytest.approx(6_000_000.0)
+
+    def test_a_factor_needs_no_lots_of_its_own(self, app):
+        # It has no schedule to contribute, so it must not be asked for one.
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        app.elements = [
+            {"name": "1.1 Airframe", "kind": "fitted",
+             "analogy": [list(r) for r in M.EXAMPLE_ANALOGY],
+             "estimate": [list(r) for r in M.EXAMPLE_ESTIMATE],
+             "factor": 0.08, "basis": []},
+            {"name": "1.4 SE", "kind": "factor", "analogy": [],
+             "estimate": [], "factor": 0.08, "basis": []},
+        ]
+        app._refresh_element_list(0)
+        program = app.build_program()          # must not raise
+        assert len(program.fiscal_years) == len(M.EXAMPLE_ESTIMATE)
