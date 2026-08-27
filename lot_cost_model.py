@@ -3355,6 +3355,19 @@ class LotCostApp(tk.Tk):
                 else self.tab_run
             )
 
+    def _first_tab_for_kind(self, kind: str):
+        """The tab this kind of element is actually filled in on.
+
+        Selecting a hidden tab makes Tk display it again, so anything that
+        moves the user after a kind change has to pick a tab that kind still
+        has.
+        """
+        if kind == "fitted":
+            return self.tab_analogy
+        if kind == "amount":
+            return self.tab_estimate
+        return self.tab_run
+
     def phase_amount(self):
         """Enter a non-recurring total and spread it over the lots.
 
@@ -3677,10 +3690,11 @@ class LotCostApp(tk.Tk):
         fresh["estimate"] = [[row[0], "", ""] for row in current]
         self.elements.append(fresh)
         self._refresh_element_list(len(self.elements) - 1)
-        self.nb.select(self.tab_analogy)
+        self.nb.select(self._first_tab_for_kind(kind))
         hint = {
             "fitted": "Enter its analogy lots and its quantity for each lot.",
-            "amount": "Put the cost of each lot in the Lot Quantity column "
+            "amount": "Click Phase a total to spread one number across the "
+                      "years, or type each year's cost in the Amount column "
                       "on tab 2.",
             "factor": "Set its percentage and what it applies to, above the "
                       "tabs.",
@@ -3940,6 +3954,20 @@ class LotCostApp(tk.Tk):
         return path
 
     def load_example(self):
+        kind = self.elements[self.current_element].get("kind", "fitted")
+        if kind != "fitted":
+            # The example is an analogy history and a quantity per lot.
+            # Loaded onto an amount those quantities would be read as
+            # dollars, which is the mistake the Amount heading exists to
+            # prevent.
+            messagebox.showinfo(
+                "Example data",
+                "The example is a learning curve, so it only fits a "
+                f"fitted element. {self.elements[self.current_element]['name']}"
+                f" is {'a factor' if kind == 'factor' else 'an amount'}. "
+                "Switch to a fitted element, or add one, and load it there.",
+            )
+            return
         self.grid_analogy.load(EXAMPLE_ANALOGY)
         self.grid_estimate.load(EXAMPLE_ESTIMATE)
         self._capture_element()

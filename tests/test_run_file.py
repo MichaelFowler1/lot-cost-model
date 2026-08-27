@@ -682,3 +682,66 @@ class TestGridsFollowTheElementKind:
         app._refresh_element_list(1)
         rows = app.grid_estimate.get_rows()
         assert [r[1] for r in rows] == ["8000000", "4000000"]
+
+    def test_selecting_a_hidden_tab_would_resurrect_it(self, app):
+        # The reason add_element cannot just select tab 1: Tk flips a hidden
+        # tab back to normal when you select it, so hiding is not enough on
+        # its own.
+        self._kinds(app)._refresh_element_list(0)
+        app.nb.tab(app.tab_analogy, state="hidden")
+        app.nb.select(app.tab_analogy)
+        assert app.nb.tab(app.tab_analogy, "state") == "normal"
+
+    def test_adding_an_amount_does_not_open_the_analogy_tab(self, app):
+        wipe(app)
+        app.elements = [app._blank_element("H", "fitted")]
+        app._refresh_element_list(0)
+        app._ask_kind = lambda: "amount"
+        app._ask_name = lambda *a, **k: "N"
+        try:
+            app.add_element()
+        finally:
+            del app._ask_kind, app._ask_name
+        assert app.nb.tab(app.tab_analogy, "state") == "hidden"
+        assert app.nb.nametowidget(app.nb.select()) is app.tab_estimate
+
+    def test_adding_a_factor_lands_off_both_lot_tabs(self, app):
+        wipe(app)
+        app.elements = [app._blank_element("H", "fitted")]
+        app._refresh_element_list(0)
+        app._ask_kind = lambda: "factor"
+        app._ask_name = lambda *a, **k: "SE"
+        try:
+            app.add_element()
+        finally:
+            del app._ask_kind, app._ask_name
+        assert app.nb.nametowidget(app.nb.select()) not in (
+            app.tab_analogy, app.tab_estimate
+        )
+
+    def test_the_added_hint_never_names_the_old_column(self, app):
+        wipe(app)
+        app.elements = [app._blank_element("H", "fitted")]
+        app._refresh_element_list(0)
+        app._ask_kind = lambda: "amount"
+        app._ask_name = lambda *a, **k: "N"
+        try:
+            app.add_element()
+        finally:
+            del app._ask_kind, app._ask_name
+        assert "Lot Quantity" not in app.var_status.get()
+        assert "Amount" in app.var_status.get()
+
+    def test_example_data_is_refused_on_a_non_fitted_element(self, app, monkeypatch):
+        # EXAMPLE_ESTIMATE holds quantities. On an amount element the tool
+        # reads that column as dollars, so loading it there would be exactly
+        # the confusion the Amount heading was introduced to stop.
+        self._kinds(app)._refresh_element_list(1)
+        seen = {}
+        monkeypatch.setattr(
+            M.messagebox, "showinfo",
+            lambda title, msg, **k: seen.setdefault("msg", msg),
+        )
+        app.load_example()
+        assert "fitted" in seen.get("msg", "")
+        assert app.grid_estimate.get_rows() == []
