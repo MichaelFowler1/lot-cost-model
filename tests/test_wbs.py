@@ -505,3 +505,204 @@ class TestBuySensitivity:
         row = [e for e in rolled.elements if e.name == late.name][0]
         assert row.by_lot[0] == 0.0
         assert len(frame) == 1
+
+
+def se_pm_program():
+    """Hardware, engineering as a percentage of it, and one-off tooling."""
+    return wbs.Program(
+        name="FULL_WBS",
+        fiscal_years=FY_BUY,
+        elements=[
+            airframe(), propulsion(), avionics(),
+            wbs.factor_of("1.4 Systems Engineering", 0.08),
+            wbs.factor_of(
+                "1.5 Program Management", 0.05,
+                basis=["1.1 Airframe", "1.2 Propulsion", "1.3 Avionics kit",
+                       "1.4 Systems Engineering"],
+            ),
+            wbs.flat_amount("1.6 Tooling", [8e6, 4e6, 0, 0, 0, 0]),
+        ],
+    )
+
+
+HARDWARE = ["1.1 Airframe", "1.2 Propulsion", "1.3 Avionics kit"]
+
+
+class TestFactorElements:
+    def test_a_factor_is_exactly_its_share_of_the_basis(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        by = {r.name: r for r in res.elements}
+        hardware = sum(by[n].total for n in HARDWARE)
+        assert by["1.4 Systems Engineering"].total == pytest.approx(
+            0.08 * hardware, rel=1e-9
+        )
+
+    def test_a_factor_can_sit_on_another_factor(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        by = {r.name: r for r in res.elements}
+        base = sum(by[n].total for n in HARDWARE) + by[
+            "1.4 Systems Engineering"
+        ].total
+        assert by["1.5 Program Management"].total == pytest.approx(
+            0.05 * base, rel=1e-9
+        )
+
+    def test_a_factor_is_applied_lot_by_lot_not_to_the_total(self):
+        # Engineering effort follows the hardware it supports, so the
+        # phasing has to match rather than being spread evenly.
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        by = {r.name: r for r in res.elements}
+        hardware = np.sum([by[n].by_lot for n in HARDWARE], axis=0)
+        np.testing.assert_allclose(
+            by["1.4 Systems Engineering"].by_lot, 0.08 * hardware, rtol=1e-9
+        )
+
+    def test_an_empty_basis_means_every_fitted_element(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        se = [r for r in res.elements
+              if r.name == "1.4 Systems Engineering"][0]
+        assert sorted(se.basis) == sorted(HARDWARE)
+
+    def test_the_model_column_says_what_it_is_a_percentage_of(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        se = [r for r in res.elements
+              if r.name == "1.4 Systems Engineering"][0]
+        assert "8.0%" in se.model
+        assert "1.1 Airframe" in se.model
+
+    def test_totals_still_reconcile_with_derived_elements_present(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        assert res.total == pytest.approx(
+            sum(e.total for e in res.elements), rel=1e-9
+        )
+        assert res.by_lot["Program Total ($)"].sum() == pytest.approx(
+            res.total, rel=1e-6
+        )
+
+
+class TestAmountElements:
+    def test_it_costs_exactly_what_was_entered(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        by = {r.name: r for r in res.elements}
+        assert by["1.6 Tooling"].total == pytest.approx(12e6)
+        np.testing.assert_allclose(
+            by["1.6 Tooling"].by_lot, [8e6, 4e6, 0, 0, 0, 0]
+        )
+
+    def test_it_is_not_dragged_into_a_factor_by_default(self):
+        # The default basis is the fitted elements, so tooling is not
+        # silently swept into an engineering percentage.
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        se = [r for r in res.elements
+              if r.name == "1.4 Systems Engineering"][0]
+        assert "1.6 Tooling" not in se.basis
+
+    def test_the_wrong_number_of_amounts_is_refused(self):
+        prog = se_pm_program()
+        prog.elements[-1].amounts = [1.0, 2.0]
+        with pytest.raises(wbs.ProgramError, match="lot amounts"):
+            wbs.roll_up(prog, simulate=False)
+
+
+class TestKindValidation:
+    def test_a_factor_element_needs_a_factor(self):
+        prog = se_pm_program()
+        prog.elements[3].factor = None
+        with pytest.raises(wbs.ProgramError, match="needs a factor"):
+            wbs.roll_up(prog, simulate=False)
+
+    def test_a_basis_naming_an_unknown_element_is_refused(self):
+        prog = se_pm_program()
+        prog.elements[3].basis = ["1.9 Imaginary"]
+        with pytest.raises(wbs.ProgramError, match="not.*an element"):
+            wbs.roll_up(prog, simulate=False)
+
+    def test_an_element_cannot_be_a_percentage_of_itself(self):
+        prog = se_pm_program()
+        prog.elements[3].basis = ["1.4 Systems Engineering"]
+        with pytest.raises(wbs.ProgramError, match="percentage of itself"):
+            wbs.roll_up(prog, simulate=False)
+
+    def test_a_circle_between_factors_is_refused(self):
+        prog = se_pm_program()
+        prog.elements[3].basis = ["1.5 Program Management"]
+        prog.elements[4].basis = ["1.4 Systems Engineering"]
+        with pytest.raises(wbs.ProgramError, match="circle"):
+            wbs.roll_up(prog, simulate=False)
+
+    def test_a_program_of_only_derived_elements_is_refused(self):
+        prog = wbs.Program(
+            name="P", fiscal_years=FY_BUY,
+            elements=[wbs.flat_amount("Only tooling", [1e6] * 6)],
+        )
+        with pytest.raises(wbs.ProgramError, match="no fitted element"):
+            wbs.roll_up(prog, simulate=False)
+
+    def test_an_unknown_kind_is_refused(self):
+        prog = se_pm_program()
+        prog.elements[-1].kind = "guesswork"
+        with pytest.raises(wbs.ProgramError, match="expected one of"):
+            wbs.roll_up(prog, simulate=False)
+
+
+@pytest.fixture(scope="module")
+def full():
+    return wbs.roll_up(se_pm_program(), n_iter=8000, seed=11)
+
+
+@risk
+class TestDerivedElementsUnderRisk:
+    """Derived kinds inherit uncertainty; they never invent it."""
+
+    def test_a_factor_moves_perfectly_with_its_basis(self, full):
+        # It is a fixed percentage on every iteration, so the correlation is
+        # 1 by construction rather than by assumption.
+        by = {r.name: r for r in full.elements}
+        basis = np.sum([by[n].totals for n in HARDWARE], axis=0)
+        se = by["1.4 Systems Engineering"].totals
+        assert np.corrcoef(basis, se)[0, 1] == pytest.approx(1.0, abs=1e-9)
+
+    def test_a_factor_keeps_its_share_on_every_draw(self, full):
+        by = {r.name: r for r in full.elements}
+        basis = np.sum([by[n].totals for n in HARDWARE], axis=0)
+        ratio = by["1.4 Systems Engineering"].totals / basis
+        assert np.allclose(ratio, ratio[0], rtol=1e-9)
+
+    def test_an_amount_does_not_move_at_all(self, full):
+        by = {r.name: r for r in full.elements}
+        tooling = by["1.6 Tooling"].totals
+        assert np.std(tooling) == pytest.approx(0.0, abs=1e-6)
+        assert np.allclose(tooling, 12e6)
+
+    def test_an_amount_contributes_no_variance(self, full):
+        row = full.tornado.loc[
+            full.tornado["component"] == "1.6 Tooling"
+        ].iloc[0]
+        assert row["variance_share"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_tornado_covers_every_kind_and_still_sums_to_one(self, full):
+        assert set(full.tornado["kind"]) == {"fitted", "factor", "amount"}
+        assert len(full.tornado) == len(full.elements)
+        assert full.tornado["variance_share"].sum() == pytest.approx(
+            1.0, abs=1e-9
+        )
+
+    def test_an_amount_still_lands_in_every_percentile(self, full):
+        # It does not move, but it is still money and must be in the total.
+        without = wbs.roll_up(
+            wbs.Program(
+                name="no tooling",
+                fiscal_years=FY_BUY,
+                elements=[e for e in se_pm_program().elements
+                          if e.kind != "amount"],
+            ),
+            n_iter=8000, seed=11,
+        )
+        assert full.p80 - without.p80 == pytest.approx(12e6, rel=0.02)
+
+    def test_percentiles_are_still_ordered(self, full):
+        assert full.p50 < full.p80 < full.p90
+
+    def test_the_derived_kinds_are_disclosed(self, full):
+        text = " ".join(full.notes)
+        assert "percentage of" in text and "spread of its own" in text

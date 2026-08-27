@@ -58,24 +58,132 @@ class ProgramError(Exception):
     """The programme as described cannot be priced."""
 
 
+#: The three shapes a WBS element can take.
+#:
+#: ``fitted``  Priced from its own analogy history by a learning curve.
+#: ``factor``  A percentage of other elements. Systems engineering and
+#:             programme management are the usual cases: they do not learn,
+#:             they scale with the hardware they support.
+#: ``amount``  A cost entered directly, lot by lot. Tooling, qualification,
+#:             and anything else that happens once and follows no curve.
+KINDS = ("fitted", "factor", "amount")
+
+
 @dataclass
 class Element:
-    """One WBS element: its own history, its own share of the buy."""
+    """One WBS element.
+
+    Only ``fitted`` elements carry a curve. Forcing a learning curve onto
+    systems engineering or a one-off tooling buy would be fitting a shape the
+    work does not have, so the other two kinds are priced arithmetically and
+    say so.
+    """
 
     name: str
+    kind: str = "fitted"
+
+    # -- fitted --------------------------------------------------------------
     #: Analogy lots for this element alone. Columns: Lot FY, Qty, AUC ($K).
-    analogy: pd.DataFrame
+    analogy: pd.DataFrame | None = None
     #: Units of this element bought in each lot of the programme schedule.
-    quantities: list[float]
+    quantities: list[float] | None = None
     #: Complexity factor per lot. A single value is broadcast.
     complexity: list[float] | float = 1.0
     #: Per-element overrides, merged over SETTINGS.
     settings: dict = field(default_factory=dict)
 
+    # -- factor --------------------------------------------------------------
+    #: Share of the basis, as a fraction. 0.08 is eight percent.
+    factor: float | None = None
+    #: Elements it is a percentage of. Empty or None means every fitted
+    #: element, which is the usual reading of "a percentage of hardware".
+    basis: list[str] | None = None
+
+    # -- amount --------------------------------------------------------------
+    #: Cost in each lot of the programme schedule, already in the same
+    #: dollars as everything else. Inflation is assumed already applied.
+    amounts: list[float] | None = None
+
     def complexity_per_lot(self, n_lots: int) -> list[float]:
         if isinstance(self.complexity, (int, float)):
             return [float(self.complexity)] * n_lots
         return [float(c) for c in self.complexity]
+
+    def validate(self, n_lots: int):
+        """Check this element carries what its kind needs."""
+        if self.kind not in KINDS:
+            raise ProgramError(
+                f"{self.name} has kind {self.kind!r}; expected one of "
+                f"{list(KINDS)}."
+            )
+        if self.kind == "fitted":
+            if self.analogy is None or not len(self.analogy):
+                raise ProgramError(
+                    f"{self.name} is a fitted element, so it needs analogy "
+                    "lots of its own to fit a curve to."
+                )
+            if self.quantities is None:
+                raise ProgramError(
+                    f"{self.name} is a fitted element and needs a quantity "
+                    "for each lot."
+                )
+            if len(self.quantities) != n_lots:
+                raise ProgramError(
+                    f"{self.name} has {len(self.quantities)} lot quantities "
+                    f"but the programme has {n_lots} lots. Every element is "
+                    "priced against the same schedule; a lot it does not "
+                    "take part in is a quantity of zero."
+                )
+            if any(q < 0 for q in self.quantities):
+                raise ProgramError(
+                    f"{self.name} has a negative lot quantity."
+                )
+            if not any(q > 0 for q in self.quantities):
+                raise ProgramError(
+                    f"{self.name} is bought in no lot, so it has no cost. "
+                    "Remove it or give it a quantity."
+                )
+        elif self.kind == "factor":
+            if self.factor is None:
+                raise ProgramError(
+                    f"{self.name} is a factor element and needs a factor, "
+                    "as a fraction: 0.08 for eight percent."
+                )
+            if self.factor < 0:
+                raise ProgramError(
+                    f"{self.name} has a negative factor."
+                )
+        else:  # amount
+            if self.amounts is None:
+                raise ProgramError(
+                    f"{self.name} is an amount element and needs a cost for "
+                    "each lot; use zero for the lots it does not fall in."
+                )
+            if len(self.amounts) != n_lots:
+                raise ProgramError(
+                    f"{self.name} has {len(self.amounts)} lot amounts but "
+                    f"the programme has {n_lots} lots."
+                )
+            if any(a < 0 for a in self.amounts):
+                raise ProgramError(f"{self.name} has a negative amount.")
+
+
+def fitted(name, analogy, quantities, complexity=1.0, **kw) -> Element:
+    """A hardware element priced from its own history."""
+    return Element(
+        name=name, kind="fitted", analogy=analogy, quantities=quantities,
+        complexity=complexity, **kw
+    )
+
+
+def factor_of(name, factor, basis=None) -> Element:
+    """A percentage of other elements, such as SE/PM on the hardware."""
+    return Element(name=name, kind="factor", factor=factor, basis=basis)
+
+
+def flat_amount(name, amounts) -> Element:
+    """A cost entered lot by lot, such as tooling or qualification."""
+    return Element(name=name, kind="amount", amounts=list(amounts))
 
 
 @dataclass
@@ -101,20 +209,61 @@ class Program:
             if el.name in seen:
                 raise ProgramError(f"Two elements are both named {el.name!r}.")
             seen.add(el.name)
-            if len(el.quantities) != self.n_lots:
+            el.validate(self.n_lots)
+
+        if not any(e.kind == "fitted" for e in self.elements):
+            raise ProgramError(
+                "The programme has no fitted element. A factor needs "
+                "something to be a percentage of, and an amount on its own "
+                "is a number, not an estimate."
+            )
+        # Resolving here rather than at pricing time so a bad basis or a
+        # circular reference is reported before anything is computed.
+        self.pricing_order()
+
+    def pricing_order(self) -> list[Element]:
+        """Elements in an order where every basis is priced before its factor.
+
+        Raises:
+            ProgramError: On a basis naming an element that does not exist,
+                an element used as its own basis, or a cycle between factors.
+        """
+        by_name = {e.name: e for e in self.elements}
+        ordered: list[Element] = [
+            e for e in self.elements if e.kind in ("fitted", "amount")
+        ]
+        done = {e.name for e in ordered}
+        pending = [e for e in self.elements if e.kind == "factor"]
+
+        for el in pending:
+            for ref in el.basis or []:
+                if ref not in by_name:
+                    raise ProgramError(
+                        f"{el.name} is a percentage of {ref!r}, which is not "
+                        f"an element of this programme. Known elements: "
+                        f"{sorted(by_name)}."
+                    )
+                if ref == el.name:
+                    raise ProgramError(
+                        f"{el.name} is a percentage of itself."
+                    )
+
+        while pending:
+            ready = [
+                e for e in pending
+                if all(ref in done for ref in (e.basis or []))
+            ]
+            if not ready:
+                stuck = ", ".join(sorted(e.name for e in pending))
                 raise ProgramError(
-                    f"{el.name} has {len(el.quantities)} lot quantities but "
-                    f"the programme has {self.n_lots} lots. Every element is "
-                    "priced against the same schedule; a lot it does not "
-                    "take part in is a quantity of zero."
+                    "These factor elements depend on each other in a circle, "
+                    f"so none can be priced first: {stuck}."
                 )
-            if any(q < 0 for q in el.quantities):
-                raise ProgramError(f"{el.name} has a negative lot quantity.")
-            if not any(q > 0 for q in el.quantities):
-                raise ProgramError(
-                    f"{el.name} is bought in no lot, so it has no cost. "
-                    "Remove it or give it a quantity."
-                )
+            for e in ready:
+                ordered.append(e)
+                done.add(e.name)
+            pending = [e for e in pending if e not in ready]
+        return ordered
 
 
 @dataclass
@@ -129,6 +278,9 @@ class ElementResult:
     total: float
     by_lot: np.ndarray
     n_lots_fitted: int
+    kind: str = "fitted"
+    #: For a factor element, what it was a percentage of.
+    basis: list[str] = field(default_factory=list)
     #: Present only when the element was simulated.
     totals: np.ndarray | None = None
 
@@ -154,6 +306,8 @@ class ProgramResult:
     scurve: pd.DataFrame | None = None
     #: Variance contribution by element, largest first.
     tornado: pd.DataFrame | None = None
+    #: Elements in the order they were priced, bases before their factors.
+    order: list = field(default_factory=list)
     #: What treating the elements as independent would have understated.
     independence_understates_sd_by: float | None = None
     #: The closed-form 1 + rho(k-1), to check the sampler against the algebra.
@@ -174,6 +328,62 @@ def _estimate_frame(program: Program, element: Element) -> pd.DataFrame:
             "Qty": [float(q) for q in element.quantities],
             "Complexity": element.complexity_per_lot(program.n_lots),
         }
+    )
+
+
+def price_derived(
+    program: Program, element: Element, priced: "dict[str, ElementResult]"
+) -> ElementResult:
+    """Cost a factor or amount element, which have no curve of their own.
+
+    A factor is applied lot by lot rather than to the total, so it inherits
+    the phasing of whatever it supports: engineering effort follows the
+    hardware it is engineering.
+    """
+    n = program.n_lots
+    if element.kind == "amount":
+        by_lot = np.asarray(element.amounts, dtype=float)
+        model = "Amount"
+        basis: list[str] = []
+    else:
+        basis = list(element.basis or [
+            name for name, r in priced.items() if r.kind == "fitted"
+        ])
+        if not basis:
+            raise ProgramError(
+                f"{element.name} is a percentage of nothing. Name the "
+                "elements it applies to, or add a fitted element."
+            )
+        missing = [b for b in basis if b not in priced]
+        if missing:
+            raise ProgramError(
+                f"{element.name} is a percentage of {missing}, which have "
+                "not been priced."
+            )
+        base = np.sum([priced[b].by_lot for b in basis], axis=0)
+        by_lot = float(element.factor) * base
+        model = f"{element.factor:.1%} of " + ", ".join(basis)
+
+    empty = pd.DataFrame(
+        {
+            "Lot": range(1, n + 1),
+            "Fiscal Year": program.fiscal_years,
+            "Lot Quantity": [0] * n,
+            "Cost ($)": np.round(by_lot, 2),
+        }
+    )
+    return ElementResult(
+        name=element.name,
+        model=model,
+        projections=empty,
+        summary=pd.DataFrame(columns=["Item", "Value", "LC", "Rate",
+                                      "LC+Rate"]),
+        ctx={},
+        total=float(by_lot.sum()),
+        by_lot=by_lot,
+        n_lots_fitted=0,
+        kind=element.kind,
+        basis=basis,
     )
 
 
@@ -220,6 +430,7 @@ def price_element(
         total=float(by_lot.sum()),
         by_lot=by_lot,
         n_lots_fitted=int(ctx["n_keep"]),
+        kind="fitted",
     )
 
 
@@ -281,7 +492,15 @@ def roll_up(
     """
     program.validate()
 
-    results = [price_element(program, el, overrides) for el in program.elements]
+    priced: dict[str, ElementResult] = {}
+    for el in program.pricing_order():
+        if el.kind == "fitted":
+            priced[el.name] = price_element(program, el, overrides)
+        else:
+            priced[el.name] = price_derived(program, el, priced)
+    # Report in the order the analyst entered them, not the order forced by
+    # the dependencies between them.
+    results = [priced[el.name] for el in program.elements]
 
     by_lot = pd.DataFrame({"Lot": range(1, program.n_lots + 1),
                            "Fiscal Year": program.fiscal_years})
@@ -301,6 +520,7 @@ def roll_up(
 
     result = ProgramResult(
         program=program.name,
+        order=program.pricing_order(),
         elements=results,
         by_lot=by_lot,
         total=float(by_lot["Program Total ($)"].sum()),
@@ -323,9 +543,27 @@ def roll_up(
 def _program_risk(
     result: ProgramResult, correlation: float, n_iter: int, seed: int
 ):
-    """Simulate each element from its own history, then correlate the sum."""
+    """Simulate each fitted element from its own history, then correlate.
+
+    Only fitted elements carry uncertainty measured from data, so only they
+    go into the copula. The other two kinds are derived from that same draw
+    rather than given a spread of their own:
+
+    A factor element is a fixed percentage of other elements, so on every
+    iteration it is exactly that percentage of whatever they came out at. It
+    is perfectly correlated with its basis by construction, which is both
+    true and stronger than any correlation the model could be told to assume.
+
+    An amount element is a number the analyst entered. Inventing a
+    distribution around it would be inventing uncertainty nobody measured, so
+    it is carried as fixed and contributes no variance. Its cost is still in
+    every percentile, it just does not move.
+    """
+    by_name = {r.name: r for r in result.elements}
+    fitted = [r for r in result.elements if r.kind == "fitted"]
+
     elements = []
-    for r in result.elements:
+    for r in fitted:
         buy = simulate_buy(
             r.ctx,
             r.projections,
@@ -359,40 +597,50 @@ def _program_risk(
         if text not in result.warnings:
             result.warnings.append(text)
 
-    try:
-        # Cov(X_i, T) / Var(T): the contributions add to one and attribute
-        # correctly under correlation, which a ranking on input spread alone
-        # does not.
-        result.tornado = sim.tornado()
-    except Exception as exc:
-        result.warnings.append(f"Could not build the tornado: {exc}")
+    # Correlated draws per fitted element, which the derived kinds build on.
+    samples = np.asarray(sim.element_samples, dtype=float)
+    names = list(sim.element_names)
+    draws = {name: samples[:, i] for i, name in enumerate(names)}
 
-    totals = np.asarray(sim.continuous_total, dtype=float)
-    result.p50 = float(sim.p50)
-    result.p80 = float(sim.p80)
-    result.p90 = float(sim.p90)
-    result.mean = float(sim.mean)
-    result.std = float(sim.std)
-    result.cv = float(sim.cv)
-    result.point_percentile = float(sim.point_estimate_percentile)
+    for r in fitted:
+        if r.name in draws:
+            r.totals = draws[r.name]
+
+    # Derived elements, in the order their bases were priced.
+    for el in result.order:
+        r = by_name[el.name]
+        if r.kind == "amount":
+            r.totals = np.full(samples.shape[0], r.total, dtype=float)
+            draws[r.name] = r.totals
+        elif r.kind == "factor":
+            base = np.sum([draws[b] for b in r.basis], axis=0)
+            share = r.total / float(np.sum([by_name[b].total for b in r.basis]))                 if np.sum([by_name[b].total for b in r.basis]) else 0.0
+            r.totals = share * base
+            draws[r.name] = r.totals
+
+    totals = np.sum([draws[r.name] for r in result.elements], axis=0)
+
+    result.p50 = float(np.percentile(totals, 50))
+    result.p80 = float(np.percentile(totals, 80))
+    result.p90 = float(np.percentile(totals, 90))
+    result.mean = float(np.mean(totals))
+    result.std = float(np.std(totals, ddof=1))
+    result.cv = float(result.std / result.mean) if result.mean else float("nan")
+    result.point_percentile = float((totals < result.total).mean() * 100.0)
     result.correlation = float(correlation)
     result.n_iter = int(n_iter)
     result.scurve = _scurve(totals)
+    result.tornado = _tornado(result, draws, totals)
 
     if len(elements) > 1:
-        # The demonstration the correlation argument rests on: run it again
-        # with the elements independent and report what that would have cost.
         try:
             impact = correlation_impact(model, n_iter=n_iter, seed=seed)
-            # Reported on the standard deviation rather than the variance,
-            # because that is the scale a reserve is quoted in.
             result.independence_understates_sd_by = float(
                 np.sqrt(impact.empirical_variance_ratio)
             )
             result.variance_ratio_analytic = float(
                 impact.analytic_variance_ratio
             )
-            # Both of these are fractions, not dollars.
             result.p80_understatement = float(impact.p80_understatement)
             result.reserve_understatement = float(
                 impact.reserve_understatement
@@ -408,10 +656,51 @@ def _program_risk(
         "spread of the programme total."
     )
     result.notes.append(
-        "Each element is summarised as a lognormal before being correlated "
-        "with the others, which tracks its own percentiles to about half a "
-        "percent. Read the programme percentiles at that resolution."
+        "Each fitted element is summarised as a lognormal before being "
+        "correlated with the others, which tracks its own percentiles to "
+        "about half a percent. Read the programme percentiles at that "
+        "resolution."
     )
+    derived = [r for r in result.elements if r.kind != "fitted"]
+    if derived:
+        result.notes.append(
+            "Factor elements move exactly with what they are a percentage "
+            "of, and amount elements are carried as entered. Neither is "
+            "given a spread of its own, because neither has a history to "
+            "measure one from."
+        )
+
+
+def _tornado(result: ProgramResult, draws: dict, totals: np.ndarray):
+    """Variance contribution by element, over every kind.
+
+    The same decomposition cost_core uses, Cov(X_i, T)/Var(T), applied to the
+    full set rather than the fitted elements alone. It still sums to one,
+    because the total is the sum of its parts. An amount element lands at
+    exactly zero, which is the honest answer for a number that does not move.
+    """
+    var_total = float(np.var(totals, ddof=1))
+    rows = []
+    for r in result.elements:
+        x = draws.get(r.name)
+        if x is None:
+            continue
+        cov = float(np.cov(x, totals, ddof=1)[0, 1])
+        rows.append(
+            {
+                "component": r.name,
+                "kind": r.kind,
+                "std_dev": float(np.std(x, ddof=1)),
+                "covariance_with_total": cov,
+                "variance_share": cov / var_total if var_total else 0.0,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if len(frame):
+        frame = frame.sort_values(
+            "variance_share", ascending=False
+        ).reset_index(drop=True)
+    return frame
 
 
 def _scurve(totals: np.ndarray, step: int = 1) -> pd.DataFrame:
@@ -425,21 +714,30 @@ def _scurve(totals: np.ndarray, step: int = 1) -> pd.DataFrame:
 
 
 def element_summary(result: ProgramResult) -> pd.DataFrame:
-    """One row per element, for the roll-up sheet and the results pane."""
+    """One row per element, for the roll-up sheet and the results pane.
+
+    Only fitted elements have a T1 or a unit count, so the other kinds leave
+    those blank rather than showing a zero that reads like a real number.
+    """
     rows = []
     for r in result.elements:
         share = r.total / result.total if result.total else float("nan")
         row = {
             "WBS Element": r.name,
+            "Kind": r.kind,
             "Model": r.model,
-            "Analogy lots": r.n_lots_fitted,
-            "T1 ($K)": r.projections[
-                f"{r.model} T1 First Unit Cost ($K)"
-            ].iloc[0],
-            "Units bought": int(np.sum(r.projections["Lot Quantity"])),
+            "Analogy lots": r.n_lots_fitted if r.kind == "fitted" else "",
+            "T1 ($K)": "",
+            "Units bought": "",
             "Cost Before Risk ($)": round(r.total, 2),
             "Share of Program": round(share, 4),
         }
+        if r.kind == "fitted":
+            col = f"{r.model} T1 First Unit Cost ($K)"
+            if col in r.projections.columns and len(r.projections):
+                row["T1 ($K)"] = r.projections[col].iloc[0]
+            if "Lot Quantity" in r.projections.columns:
+                row["Units bought"] = int(r.projections["Lot Quantity"].sum())
         if r.totals is not None:
             row["P80 With Risk ($)"] = round(
                 float(np.percentile(r.totals, 80)), 2
@@ -448,6 +746,7 @@ def element_summary(result: ProgramResult) -> pd.DataFrame:
 
     total_row = {
         "WBS Element": "PROGRAM TOTAL",
+        "Kind": "",
         "Model": "",
         "Analogy lots": "",
         "T1 ($K)": "",
