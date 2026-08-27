@@ -520,3 +520,97 @@ class TestElementKindsInTheWindow:
         app._refresh_element_list(0)
         program = app.build_program()          # must not raise
         assert len(program.fiscal_years) == len(M.EXAMPLE_ESTIMATE)
+
+
+class TestResultsFollowTheSelectedElement:
+    """Tabs 4 and 5 show one element, so they must track the element bar."""
+
+    def _three(self, app):
+        fy = ["2028", "2029", "2030", "2031", "2032", "2033"]
+        ac = [12, 20, 30, 40, 25, 10]
+        hist = list(range(2015, 2021))
+
+        def rows(q, a):
+            return [[str(y), str(x), f"{c:.2f}"]
+                    for y, x, c in zip(hist, q, a)]
+
+        app.elements = [
+            {"name": "1.1 Airframe", "kind": "fitted",
+             "analogy": rows([5, 9, 14, 22, 34, 50],
+                             [857.91, 645.57, 531.74, 437.51, 380.10,
+                              332.21]),
+             "estimate": [[f, str(q), "1.15"] for f, q in zip(fy, ac)],
+             "factor": 0.08, "basis": []},
+            {"name": "1.2 Propulsion", "kind": "fitted",
+             "analogy": rows([12, 20, 30, 44, 68, 100],
+                             [402.10, 331.55, 288.90, 254.30, 228.75,
+                              210.40]),
+             "estimate": [[f, str(round(q * 2 * 1.1)), "1.0"]
+                          for f, q in zip(fy, ac)],
+             "factor": 0.08, "basis": []},
+            {"name": "1.4 SE", "kind": "factor", "analogy": [],
+             "estimate": [], "factor": 0.08, "basis": []},
+        ]
+        app._refresh_element_list(0)
+
+    def test_switching_element_updates_the_results_tab(self, app, tmp_path):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        self._three(app)
+        app.var_outfile.set(str(tmp_path / "o.xlsx"))
+        app.var_prog_risk.set(False)
+        app.run_program()
+        assert "1.1 Airframe" in app.lbl_result.cget("text")
+
+        app._refresh_element_list(1)
+        # It used to keep naming Airframe while Propulsion was selected,
+        # which is worse than stale: the heading and the table disagreed.
+        assert "1.2 Propulsion" in app.lbl_result.cget("text")
+        assert "1.1 Airframe" not in app.lbl_result.cget("text")
+        assert len(app.tree.get_children()) > 0
+
+    def test_a_factor_element_shows_no_fit_statistics(self, app, tmp_path):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        self._three(app)
+        app.var_outfile.set(str(tmp_path / "o.xlsx"))
+        app.var_prog_risk.set(False)
+        app.run_program()
+
+        app._refresh_element_list(2)
+        assert len(app.tree.get_children()) == 0
+        text = app.lbl_result.cget("text")
+        assert "1.4 SE" in text and "no curve" in text
+
+    def test_an_element_with_no_run_says_so(self, app, tmp_path):
+        if M.wbs is None:
+            pytest.skip("wbs.py not importable")
+        wipe(app)
+        self._three(app)
+        app.var_outfile.set(str(tmp_path / "o.xlsx"))
+        app.var_prog_risk.set(False)
+        app.run_program()
+
+        app.elements.append(app._blank_element("1.9 Added later"))
+        app._refresh_element_list(3)
+        assert len(app.tree.get_children()) == 0
+        assert "Nothing run for 1.9 Added later" in app.lbl_result.cget("text")
+
+    def test_switching_clears_another_elements_intervals(self, app, tmp_path):
+        if M.wbs is None or M.risk is None or not M.risk.AVAILABLE:
+            pytest.skip("cost_core not installed")
+        wipe(app)
+        self._three(app)
+        app.var_outfile.set(str(tmp_path / "o.xlsx"))
+        app.var_baseyear.set("2025")
+        app.run_risk()
+        assert len(app.tree_risk.get_children()) > 0
+        assert app.risk_result_element == "1.1 Airframe"
+
+        app._refresh_element_list(1)
+        # Those intervals belong to Airframe; leaving them up under a
+        # Propulsion heading would invite reading one for the other.
+        assert len(app.tree_risk.get_children()) == 0
+        assert app.risk_result is None

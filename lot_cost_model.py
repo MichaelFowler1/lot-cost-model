@@ -3179,6 +3179,71 @@ class LotCostApp(tk.Tk):
         for var in (self.var_factor_pct,):
             var.trace_add("write", lambda *_: self._capture_element())
 
+    def _refresh_element_views(self):
+        """Point tabs 4 and 5 at the element now selected.
+
+        They show one element at a time, so leaving the previous element's
+        numbers up while the bar says something else is worse than showing
+        nothing: the heading names one element and the table belongs to
+        another.
+        """
+        if not self.elements:
+            return
+        el = self.elements[self.current_element]
+        name, kind = el["name"], el.get("kind", "fitted")
+
+        result = getattr(self, "program_result", None)
+        mine = None
+        if result is not None:
+            mine = next(
+                (e for e in result.elements if e.name == name), None
+            )
+
+        if mine is None:
+            self.tree.delete(*self.tree.get_children())
+            self.lbl_result.config(
+                text=(
+                    f"Nothing run for {name} yet. Click Run Model for this "
+                    "element on its own, or run the program roll-up on tab 6."
+                )
+            )
+        elif kind == "fitted":
+            self._show_results(mine.summary, switch=False)
+            self.lbl_result.config(
+                text=(
+                    f"{mine.name}, from the program roll-up. It selected "
+                    f"{mine.model} and came to {mine.total:,.2f} before "
+                    "risk. Switch elements with the bar above the tabs; "
+                    "tab 6 has the program."
+                )
+            )
+        else:
+            # A factor or an amount has no curve, so there are no fit
+            # statistics to show. Saying so beats an empty table.
+            self.tree.delete(*self.tree.get_children())
+            self.lbl_result.config(
+                text=(
+                    f"{mine.name} is {'a factor' if kind == 'factor' else 'an amount'} "
+                    f"element, so it has no curve and no fit statistics. "
+                    f"{mine.model}. It came to {mine.total:,.2f} before risk; "
+                    "see tab 6 for it in the program."
+                )
+            )
+
+        # The risk tab holds one element's intervals. Clear it rather than
+        # let it be read as belonging to whichever element is now selected.
+        owner = getattr(self, "risk_result_element", None)
+        if owner is not None and owner != name:
+            if getattr(self, "tree_risk", None) is not None:
+                self.tree_risk.delete(*self.tree_risk.get_children())
+                self.tree_iv.delete(*self.tree_iv.get_children())
+            self.risk_result = None
+            self.risk_result_element = None
+            if hasattr(self, "var_risk_status"):
+                self.var_risk_status.set(
+                    f"Cleared: those intervals were for {owner}."
+                )
+
     def _refresh_kind_bar(self):
         """Show the controls the current element's kind needs."""
         if not self.elements:
@@ -3483,6 +3548,7 @@ class LotCostApp(tk.Tk):
         finally:
             self._switching = False
         self._refresh_kind_bar()
+        self._refresh_element_views()
 
     def _refresh_element_list(self, select: int | None = None):
         names = [e["name"] for e in self.elements]
@@ -3979,6 +4045,9 @@ class LotCostApp(tk.Tk):
         self.update_idletasks()
         try:
             self.risk_result = self._compute_risk()
+            self.risk_result_element = (
+                self.elements[self.current_element]["name"]
+            )
             self._show_risk(self.risk_result)
             self.var_risk_status.set(
                 f"Ran {self.risk_result.n_iter:,} iterations."
@@ -4260,6 +4329,9 @@ class LotCostApp(tk.Tk):
                 try:
                     self.risk_result = self._compute_risk(
                         models_ctx, projections_df, summary_df
+                    )
+                    self.risk_result_element = (
+                        self.elements[self.current_element]["name"]
                     )
                     self._show_risk(self.risk_result)
                     risk_summary = risk.summary_frame(self.risk_result)
