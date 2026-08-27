@@ -226,7 +226,10 @@ name before anything is priced.
 
 **A cost entered lot by lot.** Non-recurring engineering, tooling,
 qualification, anything that happens once. No curve, no quantity, just the
-money in the lots it falls in.
+money in the lots it falls in. Selecting this kind hides the analogy tab and
+relabels the cost column **Amount ($)**, because an amount has no history to
+fit and no quantity to fit against. Complexity disappears with it: it scales a
+fitted curve, so it means nothing on a number that was quoted.
 
 Non-recurring work is normally quoted as one total and then phased, so
 **Phase a total** does that for you: give it the total and say whether it falls

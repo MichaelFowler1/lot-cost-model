@@ -614,3 +614,71 @@ class TestResultsFollowTheSelectedElement:
         # Propulsion heading would invite reading one for the other.
         assert len(app.tree_risk.get_children()) == 0
         assert app.risk_result is None
+
+
+class TestGridsFollowTheElementKind:
+    """The two lot grids are one widget shared by every element.
+
+    Before this, an amount element showed an analogy tab it never read and a
+    column headed "Lot Quantity" that the engine consumed as dollars, so the
+    heading on screen contradicted the number being used.
+    """
+
+    def _kinds(self, app):
+        wipe(app)
+        app.elements = [
+            app._blank_element("H", "fitted"),
+            app._blank_element("N", "amount"),
+            app._blank_element("F", "factor"),
+        ]
+        return app
+
+    def test_fitted_shows_both_grids(self, app):
+        self._kinds(app)._refresh_element_list(0)
+        assert app.nb.tab(app.tab_analogy, "state") == "normal"
+        assert app.nb.tab(app.tab_estimate, "state") == "normal"
+        assert app.grid_estimate.headers[1] == "Lot Quantity"
+
+    def test_amount_hides_analogy_and_renames_the_cost_column(self, app):
+        self._kinds(app)._refresh_element_list(1)
+        # No curve to fit, so no history to fit it to.
+        assert app.nb.tab(app.tab_analogy, "state") == "hidden"
+        assert app.nb.tab(app.tab_estimate, "state") == "normal"
+        # The column the engine reads as dollars has to say so.
+        assert app.grid_estimate.headers[1] == "Amount ($)"
+
+    def test_amount_drops_complexity(self, app):
+        # Complexity scales a fitted curve; it means nothing on a quoted
+        # number, and the engine ignores it for this kind.
+        self._kinds(app)._refresh_element_list(1)
+        assert 2 in app.grid_estimate.hidden
+
+    def test_factor_hides_both_grids(self, app):
+        self._kinds(app)._refresh_element_list(2)
+        assert app.nb.tab(app.tab_analogy, "state") == "hidden"
+        assert app.nb.tab(app.tab_estimate, "state") == "hidden"
+
+    def test_a_hidden_tab_is_never_left_selected(self, app):
+        self._kinds(app)
+        app._refresh_element_list(0)
+        app.nb.select(app.tab_analogy)
+        app._refresh_element_list(1)  # analogy tab goes away underneath it
+        assert app.nb.nametowidget(app.nb.select()) is not app.tab_analogy
+
+    def test_switching_back_restores_the_fitted_headings(self, app):
+        self._kinds(app)
+        app._refresh_element_list(1)
+        app._refresh_element_list(0)
+        assert app.grid_estimate.headers[1] == "Lot Quantity"
+        assert app.grid_estimate.hidden == set()
+
+    def test_entered_amounts_survive_a_switch_away_and_back(self, app):
+        self._kinds(app)
+        app._refresh_element_list(1)
+        app.grid_estimate.load([("2028", "8000000", ""),
+                                ("2029", "4000000", "")])
+        app._capture_element()
+        app._refresh_element_list(0)
+        app._refresh_element_list(1)
+        rows = app.grid_estimate.get_rows()
+        assert [r[1] for r in rows] == ["8000000", "4000000"]

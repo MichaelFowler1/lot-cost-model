@@ -2100,10 +2100,14 @@ class LotGrid(ttk.Frame):
         ttk.Label(head, text="#", width=4, anchor="center").grid(
             row=0, column=0, padx=1
         )
+        self.head_labels: list[ttk.Label] = []
+        self.hidden: set[int] = set()
         for i, (h, w) in enumerate(zip(headers, widths)):
-            ttk.Label(
+            lbl = ttk.Label(
                 head, text=h, width=w, anchor="center", style="Head.TLabel"
-            ).grid(row=0, column=i + 1, padx=1)
+            )
+            lbl.grid(row=0, column=i + 1, padx=1)
+            self.head_labels.append(lbl)
 
         canvas_wrap = ttk.Frame(self)
         canvas_wrap.pack(fill="both", expand=True)
@@ -2125,6 +2129,32 @@ class LotGrid(ttk.Frame):
         )
         self.canvas.bind_all("<MouseWheel>", self._on_wheel)
 
+    def set_headers(self, headers: list[str]):
+        """Relabel the columns. An empty heading hides that column.
+
+        The grid is one widget reused by every element, so what a column
+        means changes with the element kind. A column that does not apply is
+        hidden rather than left showing a heading the tool will not read.
+        """
+        self.headers = list(headers)
+        self.hidden = {i for i, h in enumerate(headers) if not h}
+        for i, (lbl, h) in enumerate(zip(self.head_labels, headers)):
+            lbl.config(text=h)
+            if i in self.hidden:
+                lbl.grid_remove()
+            else:
+                lbl.grid()
+        for entries in self.rows:
+            self._apply_hidden(entries)
+
+    def _apply_hidden(self, entries):
+        for i, e in enumerate(entries):
+            if i in self.hidden:
+                e.delete(0, tk.END)
+                e.grid_remove()
+            else:
+                e.grid()
+
     def _on_wheel(self, event):
         try:
             self.canvas.yview_scroll(int(-event.delta / 120), "units")
@@ -2145,6 +2175,7 @@ class LotGrid(ttk.Frame):
             e.bind("<Control-v>", self._on_paste)
             e.bind("<Return>", lambda ev: self.add_row())
             entries.append(e)
+        self._apply_hidden(entries)
         self.rows.append(entries)
         self.body.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -2881,8 +2912,9 @@ class LotCostApp(tk.Tk):
                 raise ValueError(
                     f"{el['name']} has no forecast lots."
                     if kind == "fitted"
-                    else f"{el['name']} has no lot costs. Put the cost of "
-                    "each lot in the Lot Quantity column on tab 2."
+                    else f"{el['name']} has no costs yet. Click Phase a "
+                    "total to spread one number across the years, or type "
+                    "each year's cost in the Amount column on tab 2."
                 )
             years, values, cf = self._estimate_columns(
                 estimate_rows, el["name"]
@@ -3253,6 +3285,8 @@ class LotCostApp(tk.Tk):
         self.factor_box.pack_forget()
         self.amount_box.pack_forget()
 
+        self._refresh_grids_for_kind(kind)
+
         if kind == "fitted":
             self.var_kind_note.set(
                 "Fitted element: enter its analogy lots on tab 1 and its "
@@ -3260,8 +3294,9 @@ class LotCostApp(tk.Tk):
             )
         elif kind == "amount":
             self.var_kind_note.set(
-                "Amount element: no curve. Enter a total and phase it, or "
-                "type the cost of each lot on tab 2."
+                "Amount element: no curve, no analogy history. Click Phase a "
+                "total to enter one number and spread it, or type each "
+                "year's cost on tab 2."
             )
             self.amount_box.pack(side="left")
         else:
@@ -3274,6 +3309,50 @@ class LotCostApp(tk.Tk):
             self.var_basis_note.set(
                 "of every fitted element" if not basis
                 else "of " + ", ".join(basis)
+            )
+
+    def _refresh_grids_for_kind(self, kind: str):
+        """Point the two lot grids at what this kind of element actually is.
+
+        The grids are shared, so without this an amount element shows a
+        column headed Lot Quantity that the tool reads as dollars, and an
+        analogy tab it never opens. Hide what does not apply so the heading
+        on screen is always the number the engine will read.
+        """
+        if not hasattr(self, "grid_estimate"):
+            return
+
+        if kind == "fitted":
+            self.grid_analogy.set_headers(
+                ["Fiscal Year", "Lot Quantity", "Unit Cost AUC ($K)"]
+            )
+            self.grid_estimate.set_headers(
+                ["Fiscal Year", "Lot Quantity", "Complexity Factor"]
+            )
+            wanted = {self.tab_analogy, self.tab_estimate}
+        elif kind == "amount":
+            # No curve and no history: a cost per year and nothing else.
+            # Complexity multiplies a fitted curve, so it has no meaning on
+            # a number that was quoted rather than estimated.
+            self.grid_estimate.set_headers(["Fiscal Year", "Amount ($)", ""])
+            wanted = {self.tab_estimate}
+        else:
+            # A factor is a percentage of other elements. It has no lots at
+            # all, so both grids are noise.
+            wanted = set()
+
+        for tab in (self.tab_analogy, self.tab_estimate):
+            self.nb.tab(tab, state=("normal" if tab in wanted else "hidden"))
+
+        # Never leave the user staring at a tab that just disappeared.
+        try:
+            current = self.nb.nametowidget(self.nb.select())
+        except (tk.TclError, KeyError):
+            return
+        if current in (self.tab_analogy, self.tab_estimate)                 and current not in wanted:
+            self.nb.select(
+                self.tab_estimate if self.tab_estimate in wanted
+                else self.tab_run
             )
 
     def phase_amount(self):
@@ -3537,6 +3616,9 @@ class LotCostApp(tk.Tk):
         self._switching = True
         try:
             el = self.elements[index]
+            # Headings first: a row created under the wrong headings would
+            # have the columns this kind does not use cleared underneath it.
+            self._refresh_grids_for_kind(el.get("kind", "fitted"))
             self.grid_analogy.load(
                 [tuple(r) for r in el["analogy"]] or [("", "", "")]
             )
