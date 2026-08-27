@@ -8,7 +8,9 @@ feature survived is to read it back out of the XML.
 
 from __future__ import annotations
 
+import pathlib
 import re
+import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -17,6 +19,8 @@ import pytest
 
 import lot_cost_model as M
 import risk as R
+
+ROOT = pathlib.Path(M.__file__).resolve().parent
 
 
 @pytest.fixture(scope="module")
@@ -240,3 +244,37 @@ class TestSCurveSheet:
     def test_curve_and_two_markers(self, risk_book):
         xml = [x for x in chart_xml(risk_book) if "S-Curve" in x][0]
         assert len(elements(xml, "ser")) == 3
+
+
+class TestSingleFileBuild:
+    """The tool has to survive being bundled into one archive."""
+
+    def test_it_builds_and_contains_every_module(self, tmp_path):
+        import zipfile
+        sys.path.insert(0, str(ROOT / "tools"))
+        import build_pyz
+
+        target = build_pyz.build(ROOT, tmp_path)
+        assert target.exists()
+        names = set(zipfile.ZipFile(target).namelist())
+        assert {"__main__.py", "lot_cost_model.py", "risk.py",
+                "wbs.py"} <= names
+
+    def test_the_archive_imports_and_prices(self, tmp_path):
+        # A zipapp is only useful if Python can import straight out of it.
+        sys.path.insert(0, str(ROOT / "tools"))
+        import build_pyz
+
+        target = build_pyz.build(ROOT, tmp_path)
+        sys.path.insert(0, str(target))
+        try:
+            import importlib
+            mod = importlib.import_module("lot_cost_model")
+            assert mod.TOOL_VERSION
+        finally:
+            sys.path.remove(str(target))
+
+    def test_the_entry_point_is_importable(self):
+        # main() has to be callable, not buried in a __main__ guard, or the
+        # archive has nothing to start.
+        assert callable(M.main)

@@ -254,6 +254,29 @@ landing at exactly zero.
 Inflation is assumed already applied to every element. Escalation and
 per-element prior units remain deliberately absent.
 
+## Giving it to someone else
+
+Two audiences, and they need different things.
+
+**Someone who only needs to read the estimate** needs the workbook, not the
+tool. Every sheet, chart, fit statistic and assumption is in there, and it
+opens anywhere Excel does.
+
+**Someone who needs to run it** needs Python. Where compiled executables are
+blocked, which is common, `python tools/build_pyz.py` bundles the three modules
+into a single `lot-cost-model.pyz`, about 220KB. That is a plain zip archive
+rather than a binary, and it runs with the Python already on the machine:
+
+```
+python lot-cost-model.pyz
+```
+
+Be clear about what that does and does not solve. It removes "clone a
+repository and keep three files together"; it does not remove the
+dependencies. Whoever runs it still needs numpy, pandas and openpyxl, and
+cost_core as well for the risk half. If they have those, one file is the whole
+tool.
+
 ## Saving a run
 
 The Run menu saves everything the window holds to a small JSON file: both sets
@@ -389,7 +412,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-217 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+224 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 

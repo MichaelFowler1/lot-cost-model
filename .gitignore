@@ -16,3 +16,7 @@ env/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Built archives
+dist/
+*.pyz

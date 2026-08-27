@@ -4421,7 +4421,8 @@ class LotCostApp(tk.Tk):
 # ============================================================================
 # 8. EXECUTION BLOCK
 # ============================================================================
-if __name__ == "__main__":
+def main() -> int:
+    """Open the window. Importable, so the tool can be packaged or scripted."""
     # Crisper text on high-DPI Windows displays.
     try:
         from ctypes import windll
@@ -4434,7 +4435,14 @@ if __name__ == "__main__":
         app = LotCostApp()
     except tk.TclError as exc:
         print(f"Could not start the GUI: {exc}", file=sys.stderr)
-        print("A desktop session is required to run this tool.", file=sys.stderr)
-        sys.exit(1)
+        print(
+            "A desktop session is required to run this tool.", file=sys.stderr
+        )
+        return 1
 
     app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
