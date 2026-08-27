@@ -146,6 +146,23 @@ showing exactly the same numbers.
 The element table keeps them in separate columns, `Cost Before Risk ($)` and
 `P80 With Risk ($)`, so there is no way to read one for the other.
 
+### Funding by fiscal year
+
+`by_lot` is the estimating view: one row per lot with a year beside it. The
+**Funding by FY** tab and the `Program_By_FY` sheet are the budget view, one row
+per year whatever the lot structure, with each element as a column plus a
+running cumulative and each year's share of the program.
+
+The two differ whenever two lots fall in the same year. There the lot table
+shows two rows and the funding line shows one, which is what a budget exhibit
+wants. Years run consecutively, so a year with no buy in it shows as a zero
+rather than going missing: a funding profile with a hole in it should show the
+hole.
+
+Every lot's cost sits in the year it is awarded. Spreading a lot across the
+years it is actually spent over, an outlay or expenditure profile, is a
+separate thing this does not do.
+
 ### Why the risk roll-up is not a column of SUMs
 
 Elements on one program share a workforce, a supply base and a schedule, so
@@ -372,7 +389,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-209 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+217 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 

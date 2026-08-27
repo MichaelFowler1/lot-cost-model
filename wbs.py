@@ -948,6 +948,11 @@ def save_program_workbook(
         result.by_lot.to_excel(
             writer, sheet_name="Program_By_Lot", index=False
         )
+        annual_sheet = by_fiscal_year(result)
+        if len(annual_sheet):
+            annual_sheet.to_excel(
+                writer, sheet_name="Program_By_FY", index=False
+            )
         if result.scurve is not None:
             result.scurve.to_excel(
                 writer, sheet_name="Program_SCurve", index=False
@@ -968,7 +973,7 @@ def save_program_workbook(
         used = {
             "Program_Summary", "Program_Elements", "Program_By_Lot",
             "Program_SCurve", "Program_Tornado", "Buy_Sensitivity",
-            "Element_Influence",
+            "Element_Influence", "Program_By_FY",
         }
         for r in result.elements:
             r.projections.to_excel(
@@ -977,36 +982,40 @@ def save_program_workbook(
 
     wb = openpyxl.load_workbook(filename)
 
-    # Cost by fiscal year, stacked so the element mix is visible.
-    ws = wb["Program_By_Lot"]
-    last = len(result.by_lot) + 1
-    if last > 1:
+    # Annual funding, stacked so the element mix within each year shows.
+    # Drawn from the by-fiscal-year table rather than the lot table, because
+    # two lots in one year are one year of funding, not two bars.
+    annual = by_fiscal_year(result)
+    if len(annual) and "Program_By_FY" in wb.sheetnames:
         from openpyxl.chart import BarChart
 
+        ws = wb["Program_By_FY"]
+        last = len(annual) + 1
+        cols = list(annual.columns)
         bar = BarChart()
         bar.type = "col"
         bar.grouping = "stacked"
         bar.overlap = 100
         _format_chart(
-            bar, f"{result.program}: cost by fiscal year",
+            bar, f"{result.program}: funding by fiscal year",
             "Fiscal Year", "Cost ($)", 20, 11,
-        )
-        names = [r.name for r in result.elements]
-        for i, _ in enumerate(names):
-            bar.series.append(
-                Series(
-                    Reference(ws, min_col=3 + i, min_row=1, max_row=last),
-                    title_from_data=True,
-                )
-            )
-        bar.set_categories(
-            Reference(ws, min_col=2, min_row=2, max_row=last)
         )
         # A fiscal year is a label, not a quantity: the shared chart format
         # would otherwise render 2028 as "2,028".
         bar.x_axis.numFmt = "0"
-        bar.y_axis.numFmt = '#,##0,,"M"' 
-        ws.add_chart(bar, f"{_col_letter(len(names) + 5)}2")
+        bar.y_axis.numFmt = _money_axis_fmt(
+            0.0, float(annual["Total ($)"].max())
+        )
+        for r in result.elements:
+            bar.series.append(
+                Series(
+                    Reference(ws, min_col=cols.index(r.name) + 1, min_row=1,
+                              max_row=last),
+                    title_from_data=True,
+                )
+            )
+        bar.set_categories(Reference(ws, min_col=1, min_row=2, max_row=last))
+        ws.add_chart(bar, f"{_col_letter(len(cols) + 2)}2")
 
     if result.tornado is not None and len(result.tornado):
         from openpyxl.chart import BarChart
@@ -1326,3 +1335,44 @@ def influence_table(result: ProgramResult) -> pd.DataFrame | None:
     if not frames:
         return None
     return pd.concat(frames, ignore_index=True)
+
+
+def by_fiscal_year(result: ProgramResult) -> pd.DataFrame:
+    """Annual funding: one row per fiscal year, whatever the lot structure.
+
+    ``by_lot`` is one row per lot with a year written beside it, which is the
+    estimating view. This is the budget view, and the two differ whenever two
+    lots fall in the same year: there the lot table shows two rows and the
+    funding line shows one. Years run consecutively and none is skipped, so a
+    year with no buy appears as a zero rather than going missing, which is
+    what a funding profile with a gap in it actually looks like.
+
+    Every lot's cost sits in the year it is awarded. Spreading a lot across
+    the years it is spent over is a separate thing this does not do.
+    """
+    lots = result.by_lot
+    names = [r.name for r in result.elements]
+    years = sorted({int(y) for y in lots["Fiscal Year"]})
+    if years:
+        years = list(range(min(years), max(years) + 1))
+
+    rows = []
+    for year in years:
+        mask = lots["Fiscal Year"].astype(int) == year
+        row = {"Fiscal Year": year, "Lots": int(mask.sum())}
+        for name in names:
+            row[name] = round(float(lots.loc[mask, name].sum()), 2)
+        row["Total ($)"] = round(
+            float(lots.loc[mask, "Program Total ($)"].sum()), 2
+        )
+        rows.append(row)
+
+    frame = pd.DataFrame(rows)
+    if not len(frame):
+        return frame
+    frame["Cumulative ($)"] = frame["Total ($)"].cumsum().round(2)
+    total = float(frame["Total ($)"].sum())
+    frame["Share of Program"] = (
+        (frame["Total ($)"] / total).round(4) if total else 0.0
+    )
+    return frame

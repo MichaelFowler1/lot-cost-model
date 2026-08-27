@@ -842,3 +842,65 @@ class TestPhasingANonRecurringTotal:
         nre = [r for r in res.elements if r.name == "1.6 NRE"][0]
         assert nre.total == pytest.approx(12e6)
         np.testing.assert_allclose(nre.by_lot, [6e6, 6e6, 0, 0, 0, 0])
+
+
+class TestAnnualFunding:
+    """The budget view, as distinct from the lot view."""
+
+    def test_one_row_per_year(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        annual = wbs.by_fiscal_year(res)
+        assert annual["Fiscal Year"].tolist() == FY_BUY
+
+    def test_it_reconciles_with_the_program_total(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        annual = wbs.by_fiscal_year(res)
+        assert annual["Total ($)"].sum() == pytest.approx(res.total, rel=1e-6)
+        assert annual["Cumulative ($)"].iloc[-1] == pytest.approx(
+            res.total, rel=1e-6
+        )
+
+    def test_every_element_column_reconciles_too(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        annual = wbs.by_fiscal_year(res)
+        for r in res.elements:
+            assert annual[r.name].sum() == pytest.approx(r.total, rel=1e-6)
+
+    def test_two_lots_in_one_year_become_one_funding_row(self):
+        # This is the whole difference from the lot table: a year is a year,
+        # however many awards fall in it.
+        years = [2028, 2028, 2029, 2029, 2030, 2030]
+        prog = wbs.Program("P", years, [airframe(), propulsion()])
+        res = wbs.roll_up(prog, simulate=False)
+        annual = wbs.by_fiscal_year(res)
+
+        assert len(res.by_lot) == 6           # six lots
+        assert len(annual) == 3               # three years of funding
+        assert annual["Lots"].tolist() == [2, 2, 2]
+        assert annual["Total ($)"].sum() == pytest.approx(res.total, rel=1e-6)
+
+    def test_a_year_with_no_buy_shows_as_zero_not_a_gap(self):
+        # A funding profile with a hole in it should show the hole.
+        years = [2028, 2029, 2032, 2033, 2034, 2035]
+        prog = wbs.Program("P", years, [airframe(), propulsion()])
+        annual = wbs.by_fiscal_year(wbs.roll_up(prog, simulate=False))
+        assert annual["Fiscal Year"].tolist() == list(range(2028, 2036))
+        gap = annual.loc[annual["Fiscal Year"] == 2030].iloc[0]
+        assert gap["Total ($)"] == 0.0
+        assert gap["Lots"] == 0
+
+    def test_shares_add_to_one(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        annual = wbs.by_fiscal_year(res)
+        assert annual["Share of Program"].sum() == pytest.approx(1.0, abs=1e-3)
+
+    def test_cumulative_only_climbs(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        annual = wbs.by_fiscal_year(res)
+        assert np.all(np.diff(annual["Cumulative ($)"].to_numpy()) >= 0)
+
+    def test_a_nonrecurring_amount_lands_in_the_years_it_was_phased_to(self):
+        res = wbs.roll_up(se_pm_program(), simulate=False)
+        annual = wbs.by_fiscal_year(res)
+        tooling = annual["1.6 Tooling"].to_numpy()
+        np.testing.assert_allclose(tooling, [8e6, 4e6, 0, 0, 0, 0])

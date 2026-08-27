@@ -2620,6 +2620,24 @@ class LotCostApp(tk.Tk):
         )
         panes.add(bot, weight=3)
 
+        # -- funding by fiscal year ------------------------------------------
+        page = ttk.Frame(inner)
+        inner.add(page, text="  Funding by FY  ")
+        ttk.Label(
+            page,
+            text=(
+                "The budget view: one row per fiscal year whatever the lot "
+                "structure, so two lots awarded in one year are one year of "
+                "funding. Every lot's cost sits in the year it is awarded."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(6, 4))
+        self.tree_prog_fy = ttk.Treeview(
+            page, columns=("a",), show="headings", height=12
+        )
+        _scroll(page, self.tree_prog_fy)
+
         # -- tornado ---------------------------------------------------------
         page = ttk.Frame(inner)
         inner.add(page, text="  Tornado  ")
@@ -2702,7 +2720,29 @@ class LotCostApp(tk.Tk):
         self.tree_prog_sens.tag_configure("base", background="#dff0d8")
 
     def _show_program_extras(self, result):
-        """Fill the tornado and influence views from a finished roll-up."""
+        """Fill the funding, tornado and influence views from a roll-up."""
+        annual = wbs.by_fiscal_year(result)
+        cols = list(annual.columns)
+        self.tree_prog_fy["columns"] = cols
+        for c in cols:
+            self.tree_prog_fy.heading(c, text=c)
+            self.tree_prog_fy.column(
+                c, width=70 if c in ("Fiscal Year", "Lots") else 150,
+                anchor="e",
+            )
+        self.tree_prog_fy.delete(*self.tree_prog_fy.get_children())
+        for _, r in annual.iterrows():
+            values = []
+            for c in cols:
+                v = r[c]
+                if c in ("Fiscal Year", "Lots"):
+                    values.append(f"{int(v)}")
+                elif "Share" in c:
+                    values.append(f"{float(v):.1%}")
+                else:
+                    values.append(f"{float(v):,.2f}")
+            self.tree_prog_fy.insert("", "end", values=values)
+
         self.tree_prog_tornado.delete(*self.tree_prog_tornado.get_children())
         if result.tornado is not None and len(result.tornado):
             for _, r in result.tornado.iterrows():
