@@ -181,6 +181,94 @@ def factor_of(name, factor, basis=None) -> Element:
     return Element(name=name, kind="factor", factor=factor, basis=basis)
 
 
+def phase_total(
+    total: float,
+    n_lots: int,
+    method: str = "even",
+    percentages: "list[float] | None" = None,
+    lots: "list[int] | None" = None,
+) -> list[float]:
+    """Spread a single non-recurring total across the lot schedule.
+
+    Non-recurring work is quoted as one number and then phased, so this does
+    the phasing and hands back the per-lot amounts. Those amounts stay the
+    thing that is actually costed: the profile is a way of filling them in,
+    not a rule the estimate depends on afterwards, so any year can be edited
+    by hand once it is laid down.
+
+    Args:
+        total: The whole non-recurring amount.
+        n_lots: Lots in the programme schedule.
+        method: ``even`` spreads equally over ``lots``; ``percentages``
+            applies the given split; ``single`` puts it all in one lot.
+        percentages: For ``percentages``, one figure per lot in ``lots``,
+            summing to 100.
+        lots: Which lots take the money, as 1-based positions. Defaults to
+            every lot for ``even``, and the first lot for ``single``.
+
+    Raises:
+        ProgramError: On an unknown method, a lot outside the schedule, or
+            percentages that do not sum to 100. Normalising them silently
+            would change the total the analyst asked for.
+    """
+    if n_lots <= 0:
+        raise ProgramError("The programme has no lots to phase across.")
+    if total < 0:
+        raise ProgramError("A non-recurring total cannot be negative.")
+
+    out = [0.0] * n_lots
+
+    def check(positions):
+        for i in positions:
+            if not 1 <= i <= n_lots:
+                raise ProgramError(
+                    f"Lot {i} is outside this programme, which has "
+                    f"{n_lots} lots."
+                )
+
+    if method == "single":
+        target = (lots or [1])[:1]
+        check(target)
+        out[target[0] - 1] = float(total)
+        return out
+
+    if method == "even":
+        spread = lots or list(range(1, n_lots + 1))
+        check(spread)
+        if not spread:
+            raise ProgramError("Choose at least one lot to spread across.")
+        share = float(total) / len(spread)
+        for i in spread:
+            out[i - 1] = share
+        return out
+
+    if method == "percentages":
+        if not percentages:
+            raise ProgramError(
+                "Give a percentage for each lot the money falls in."
+            )
+        spread = lots or list(range(1, len(percentages) + 1))
+        check(spread)
+        if len(percentages) != len(spread):
+            raise ProgramError(
+                f"{len(percentages)} percentages for {len(spread)} lots."
+            )
+        given = sum(percentages)
+        if abs(given - 100.0) > 0.01:
+            raise ProgramError(
+                f"The percentages come to {given:g}, not 100. Adjust them "
+                "rather than letting the tool scale them, which would change "
+                "the total."
+            )
+        for i, pct in zip(spread, percentages):
+            out[i - 1] = float(total) * float(pct) / 100.0
+        return out
+
+    raise ProgramError(
+        f"Unknown phasing {method!r}; expected even, percentages or single."
+    )
+
+
 def flat_amount(name, amounts) -> Element:
     """A cost entered lot by lot, such as tooling or qualification."""
     return Element(name=name, kind="amount", amounts=list(amounts))

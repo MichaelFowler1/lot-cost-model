@@ -207,8 +207,23 @@ priced in dependency order. A basis naming something that does not exist, an
 element used as its own basis, and a circle between factors are each refused by
 name before anything is priced.
 
-**A cost entered lot by lot.** Tooling, qualification, anything that happens
-once. No curve, no quantity, just the money in the lots it falls in.
+**A cost entered lot by lot.** Non-recurring engineering, tooling,
+qualification, anything that happens once. No curve, no quantity, just the
+money in the lots it falls in.
+
+Non-recurring work is normally quoted as one total and then phased, so
+**Phase a total** does that for you: give it the total and say whether it falls
+evenly, all in one lot, or by a percentage per year, and it fills in the lot
+amounts. Those amounts remain what actually gets costed, and any year stays
+editable afterwards, so the profile is a way of filling them in rather than a
+rule the estimate depends on. Percentages that do not come to 100 are refused
+rather than scaled, because scaling them would change the total you asked for.
+
+Two things follow from an amount being non-recurring. It does not scale in the
+buy sensitivity, since buying forty percent fewer articles does not buy forty
+percent less design work, which is what correctly makes a small buy worse per
+unit. And it is not in a factor's default basis, so engineering percentages are
+not silently loaded on top of it; tick it explicitly if you want that.
 
 Under risk the derived kinds inherit uncertainty rather than inventing it. A
 factor is computed as its exact share of the same correlated draws its basis
@@ -357,7 +372,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-194 tests with `cost_core` installed, fewer without (the risk ones skip). CI
+209 tests with `cost_core` installed, fewer without (the risk ones skip). CI
 runs both, because "works when the optional dependency is missing" is a claim
 worth checking rather than asserting.
 

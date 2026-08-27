@@ -3114,6 +3114,12 @@ class LotCostApp(tk.Tk):
         )
         self.lbl_kind.pack(side="left")
 
+        self.amount_box = ttk.Frame(self.kind_bar)
+        ttk.Button(
+            self.amount_box, text="Phase a total...",
+            command=self.phase_amount,
+        ).pack(side="left", padx=(6, 0))
+
         self.factor_box = ttk.Frame(self.kind_bar)
         ttk.Label(self.factor_box, text="Percentage:").pack(side="left")
         self.var_factor_pct = tk.StringVar(value="8.0")
@@ -3140,6 +3146,7 @@ class LotCostApp(tk.Tk):
         el = self.elements[self.current_element]
         kind = el.get("kind", "fitted")
         self.factor_box.pack_forget()
+        self.amount_box.pack_forget()
 
         if kind == "fitted":
             self.var_kind_note.set(
@@ -3148,9 +3155,10 @@ class LotCostApp(tk.Tk):
             )
         elif kind == "amount":
             self.var_kind_note.set(
-                "Amount element: no curve. Put the cost of each lot in the "
-                "Lot Quantity column on tab 2; tab 1 is not used."
+                "Amount element: no curve. Enter a total and phase it, or "
+                "type the cost of each lot on tab 2."
             )
+            self.amount_box.pack(side="left")
         else:
             self.var_kind_note.set("Factor element: ")
             self.factor_box.pack(side="left")
@@ -3162,6 +3170,146 @@ class LotCostApp(tk.Tk):
                 "of every fitted element" if not basis
                 else "of " + ", ".join(basis)
             )
+
+    def phase_amount(self):
+        """Enter a non-recurring total and spread it over the lots.
+
+        The per-lot amounts stay the thing that gets costed. This writes them
+        for you, and every year is still editable afterwards, so the profile
+        is a convenience rather than something the estimate depends on.
+        """
+        self._capture_element()
+        el = self.elements[self.current_element]
+        years = [r[0] for r in el["estimate"] if any(r)]
+        if not years:
+            # Borrow the schedule from an element that has one.
+            for other in self.elements:
+                other_years = [r[0] for r in other["estimate"] if any(r)]
+                if other_years:
+                    years = other_years
+                    break
+        if not years:
+            messagebox.showinfo(
+                "No schedule yet",
+                "Enter the fiscal years on tab 2 first, or set them up on an "
+                "element that has lots, so there is something to phase across.",
+            )
+            return
+
+        win = tk.Toplevel(self)
+        win.title(f"Phase a total across {len(years)} lots")
+        win.transient(self)
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text=(
+                "Non-recurring work is quoted as one number and then phased. "
+                "Enter the total and how it\nfalls, and the lot amounts get "
+                "filled in. You can edit any year afterwards."
+            ),
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(10, 8))
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=16)
+        ttk.Label(row, text="Total ($):").pack(side="left")
+        var_total = tk.StringVar(value="")
+        ttk.Entry(row, textvariable=var_total, width=18).pack(
+            side="left", padx=6
+        )
+
+        method = tk.StringVar(value="even")
+        body = ttk.Frame(win)
+        body.pack(fill="x", padx=16, pady=(8, 0))
+        ttk.Radiobutton(
+            body, text="Spread evenly across every lot",
+            value="even", variable=method,
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            body, text="All of it in one lot", value="single", variable=method
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            body, text="By percentage, one per lot",
+            value="percentages", variable=method,
+        ).pack(anchor="w")
+
+        detail = ttk.Frame(win)
+        detail.pack(fill="x", padx=16, pady=(6, 0))
+        ttk.Label(detail, text="Lot for 'one lot':").grid(
+            row=0, column=0, sticky="e", pady=3
+        )
+        var_lot = tk.StringVar(value=years[0])
+        ttk.Combobox(
+            detail, textvariable=var_lot, values=years, state="readonly",
+            width=10,
+        ).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(detail, text="Percentages:").grid(
+            row=1, column=0, sticky="e", pady=3
+        )
+        var_pcts = tk.StringVar(
+            value=", ".join(["0"] * len(years))
+        )
+        ttk.Entry(detail, textvariable=var_pcts, width=34).grid(
+            row=1, column=1, sticky="w", padx=6
+        )
+        ttk.Label(
+            detail,
+            text=f"one per lot, in order: {', '.join(years)}; must total 100",
+            style="Sub.TLabel",
+        ).grid(row=2, column=1, sticky="w", padx=6)
+
+        def apply():
+            try:
+                total = parse_float(var_total.get())
+            except ValueError:
+                messagebox.showerror(
+                    "Phase a total", "The total must be a number.",
+                    parent=win,
+                )
+                return
+            how = method.get()
+            try:
+                if how == "single":
+                    lots = [years.index(var_lot.get()) + 1]
+                    amounts = wbs.phase_total(
+                        total, len(years), "single", lots=lots
+                    )
+                elif how == "percentages":
+                    pcts = [
+                        float(x) for x in
+                        var_pcts.get().replace(";", ",").split(",")
+                        if x.strip()
+                    ]
+                    amounts = wbs.phase_total(
+                        total, len(years), "percentages", percentages=pcts,
+                        lots=list(range(1, len(pcts) + 1)),
+                    )
+                else:
+                    amounts = wbs.phase_total(total, len(years), "even")
+            except (ValueError, wbs.ProgramError) as exc:
+                messagebox.showerror("Phase a total", str(exc), parent=win)
+                return
+
+            self.grid_estimate.load(
+                [(y, f"{a:.2f}", "") for y, a in zip(years, amounts)]
+            )
+            self._capture_element()
+            self.nb.select(self.tab_estimate)
+            self.var_status.set(
+                f"Phased {total:,.2f} across {len(years)} lots. Edit any year "
+                "on tab 2 if the profile needs adjusting."
+            )
+            win.destroy()
+
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=12, pady=12)
+        ttk.Button(bar, text="Apply", command=apply).pack(side="right")
+        ttk.Button(bar, text="Cancel", command=win.destroy).pack(
+            side="right", padx=6
+        )
+        win.wait_window()
 
     def choose_basis(self):
         """Pick which elements this factor is a percentage of."""

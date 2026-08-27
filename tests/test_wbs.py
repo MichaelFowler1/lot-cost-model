@@ -779,3 +779,66 @@ class TestSensitivityAcrossKinds:
             return by["1.6 Tooling"].total / res.total
 
         assert share(small) > share(large)
+
+
+class TestPhasingANonRecurringTotal:
+    """NRE is quoted as one number and then phased, so the tool phases it."""
+
+    def test_even_spread_keeps_the_total(self):
+        out = wbs.phase_total(12e6, 6)
+        assert sum(out) == pytest.approx(12e6)
+        assert len(set(out)) == 1
+
+    def test_all_in_one_lot(self):
+        out = wbs.phase_total(12e6, 6, "single", lots=[2])
+        assert out[1] == pytest.approx(12e6)
+        assert sum(out) == pytest.approx(12e6)
+        assert out[0] == 0.0
+
+    def test_even_across_chosen_lots_only(self):
+        out = wbs.phase_total(12e6, 6, "even", lots=[1, 2])
+        assert out[0] == out[1] == pytest.approx(6e6)
+        assert sum(out[2:]) == 0.0
+
+    def test_percentages_apply_in_order(self):
+        out = wbs.phase_total(
+            10e6, 6, "percentages", percentages=[40, 30, 20, 10],
+            lots=[1, 2, 3, 4],
+        )
+        assert out[:4] == pytest.approx([4e6, 3e6, 2e6, 1e6])
+        assert sum(out) == pytest.approx(10e6)
+
+    def test_percentages_that_miss_a_hundred_are_refused(self):
+        # Scaling them silently would change the total the analyst asked for.
+        with pytest.raises(wbs.ProgramError, match="not 100"):
+            wbs.phase_total(
+                10e6, 6, "percentages", percentages=[40, 30, 20],
+                lots=[1, 2, 3],
+            )
+
+    def test_a_lot_outside_the_schedule_is_refused(self):
+        with pytest.raises(wbs.ProgramError, match="outside this programme"):
+            wbs.phase_total(1e6, 6, "single", lots=[9])
+
+    def test_an_unknown_profile_is_refused(self):
+        with pytest.raises(wbs.ProgramError, match="Unknown phasing"):
+            wbs.phase_total(1e6, 6, "sometime")
+
+    def test_a_negative_total_is_refused(self):
+        with pytest.raises(wbs.ProgramError, match="cannot be negative"):
+            wbs.phase_total(-1.0, 6)
+
+    def test_a_phased_total_prices_to_what_was_entered(self):
+        # The phasing is a way of filling in the amounts, and the amounts are
+        # what actually gets costed.
+        amounts = wbs.phase_total(
+            12e6, 6, "percentages", percentages=[50, 50], lots=[1, 2]
+        )
+        prog = wbs.Program(
+            "P", list(FY_BUY),
+            [airframe(), wbs.flat_amount("1.6 NRE", amounts)],
+        )
+        res = wbs.roll_up(prog, simulate=False)
+        nre = [r for r in res.elements if r.name == "1.6 NRE"][0]
+        assert nre.total == pytest.approx(12e6)
+        np.testing.assert_allclose(nre.by_lot, [6e6, 6e6, 0, 0, 0, 0])
