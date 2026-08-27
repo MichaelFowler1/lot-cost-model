@@ -706,3 +706,76 @@ class TestDerivedElementsUnderRisk:
     def test_the_derived_kinds_are_disclosed(self, full):
         text = " ".join(full.notes)
         assert "percentage of" in text and "spread of its own" in text
+
+
+class TestSensitivityAcrossKinds:
+    """Scaling a buy has to respect what each kind actually is."""
+
+    def test_it_runs_at_all_with_derived_elements_present(self):
+        # It did not: scaling walked every element's quantities, and a factor
+        # element has none, so the whole sensitivity died on a TypeError.
+        frame = wbs.buy_profile_sensitivity(
+            se_pm_program(), factors=(0.6, 1.0, 1.5)
+        )
+        assert len(frame) == 3
+
+    def test_a_factor_keeps_its_share_at_every_buy_size(self):
+        for f in (0.6, 1.0, 1.5):
+            scaled = wbs.Program(
+                "P", list(FY_BUY),
+                [wbs._scale_element(e, f) for e in se_pm_program().elements],
+            )
+            res = wbs.roll_up(scaled, simulate=False)
+            by = {r.name: r for r in res.elements}
+            hardware = sum(by[n].total for n in HARDWARE)
+            assert by["1.4 Systems Engineering"].total == pytest.approx(
+                0.08 * hardware, rel=1e-9
+            )
+
+    def test_a_nonrecurring_amount_does_not_scale_with_the_buy(self):
+        # Buying 40% fewer aircraft does not buy 40% less tooling. Scaling it
+        # would turn a one-off into a variable cost and flatter every
+        # small-buy case.
+        for f in (0.6, 1.0, 1.5):
+            scaled = wbs._scale_element(
+                wbs.flat_amount("1.6 Tooling", [8e6, 4e6, 0, 0, 0, 0]), f
+            )
+            assert scaled.amounts == [8e6, 4e6, 0, 0, 0, 0]
+
+    def test_only_fitted_quantities_move(self):
+        big = [wbs._scale_element(e, 2.0) for e in se_pm_program().elements]
+        by = {e.name: e for e in big}
+        assert by["1.1 Airframe"].quantities == [
+            q * 2 for q in AIRCRAFT
+        ]
+        assert by["1.4 Systems Engineering"].quantities is None
+        assert by["1.6 Tooling"].amounts == [8e6, 4e6, 0, 0, 0, 0]
+
+    def test_unit_cost_still_falls_as_the_buy_grows(self):
+        frame = wbs.buy_profile_sensitivity(
+            se_pm_program(), factors=(0.6, 1.0, 1.5)
+        )
+        per_unit = frame["Cost per Unit ($)"].to_numpy()
+        assert np.all(np.diff(per_unit) < 0)
+
+    def test_fixed_tooling_makes_small_buys_worse_per_unit(self):
+        # A one-off spread over fewer units costs more each, on top of the
+        # learning and rate effects. Its share should rise as the buy shrinks.
+        small = wbs.roll_up(
+            wbs.Program("P", list(FY_BUY),
+                        [wbs._scale_element(e, 0.6)
+                         for e in se_pm_program().elements]),
+            simulate=False,
+        )
+        large = wbs.roll_up(
+            wbs.Program("P", list(FY_BUY),
+                        [wbs._scale_element(e, 1.5)
+                         for e in se_pm_program().elements]),
+            simulate=False,
+        )
+
+        def share(res):
+            by = {r.name: r for r in res.elements}
+            return by["1.6 Tooling"].total / res.total
+
+        assert share(small) > share(large)

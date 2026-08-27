@@ -19,7 +19,7 @@ roll-up here is cost_core's, which exists for exactly this.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -1111,6 +1111,34 @@ def influence(result: ElementResult) -> pd.DataFrame | None:
         return None
 
 
+def _scale_element(el: Element, factor: float) -> Element:
+    """A copy of this element priced for a buy of ``factor`` times the size.
+
+    What scales depends on the kind, and getting that wrong is the whole
+    point of having kinds:
+
+    A fitted element's quantities scale, rounded to whole units, because you
+    cannot buy 7.2 airframes. A lot it sits out stays at zero.
+
+    A factor element is left alone. It is a percentage of its basis, so it
+    follows the hardware down or up without being touched.
+
+    An amount element is also left alone, and deliberately. Tooling and
+    qualification are nonrecurring: buying forty percent fewer aircraft does
+    not buy forty percent less tooling. Scaling them would quietly turn a
+    one-off into a variable cost and flatter every small-buy case.
+    """
+    if el.kind != "fitted":
+        return replace(el)
+    return replace(
+        el,
+        quantities=[
+            0.0 if q <= 0 else float(max(1, round(q * factor)))
+            for q in el.quantities
+        ],
+    )
+
+
 def buy_profile_sensitivity(
     program: Program,
     factors: "list[float] | tuple[float, ...]" = (0.6, 0.8, 1.0, 1.2, 1.5),
@@ -1154,20 +1182,7 @@ def buy_profile_sensitivity(
         scaled = Program(
             name=program.name,
             fiscal_years=list(program.fiscal_years),
-            elements=[
-                Element(
-                    name=el.name,
-                    analogy=el.analogy,
-                    # Round to whole units; a lot at zero stays there.
-                    quantities=[
-                        0.0 if q <= 0 else float(max(1, round(q * factor)))
-                        for q in el.quantities
-                    ],
-                    complexity=el.complexity,
-                    settings=dict(el.settings),
-                )
-                for el in program.elements
-            ],
+            elements=[_scale_element(el, factor) for el in program.elements],
         )
         try:
             priced = roll_up(scaled, overrides, simulate=False)
