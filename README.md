@@ -70,31 +70,21 @@ quietly handing you a garbage coefficient.
 
 ## Requirements
 
-Python 3.9 or newer, plus:
+Python 3.9 or newer, plus the library that does the arithmetic:
 
 ```
-pip install numpy pandas openpyxl
+pip install -r requirements.txt
 ```
 
-The interface uses tkinter, which already ships with Python, so there's nothing
-else to install. CI runs the suite on 3.9 and 3.10 as well as 3.11 to 3.14, so
-both the floor and the ceiling are checked rather than assumed.
+That installs numpy, pandas and openpyxl, and
+[cost-core](https://github.com/MichaelFowler1/cost-risk-toolkit) at the release
+this build was written against, which brings scipy with it. The model fits, the
+WBS roll-up, the risk analysis and both workbooks all come from the library.
+This repository is the window onto it, so it doesn't start without it.
 
-### Optional: risk analysis
-
-Tab 5 adds prediction intervals and a Monte Carlo of the whole buy, and tab 6
-adds the correlated program roll-up. Those lean on `cost_core` from the
-[cost-risk-toolkit](https://github.com/MichaelFowler1/cost-risk-toolkit),
-which needs Python 3.11 or newer:
-
-```
-pip install git+https://github.com/MichaelFowler1/cost-risk-toolkit.git
-```
-
-Skip it and everything else still works: the three model fits, model
-selection, the projections, the WBS roll-up and every cost-before-risk total.
-Only the risk halves of tabs 5 and 6 go dark, and they tell you how to install
-it. That is the whole difference between running on 3.9 and running on 3.11.
+The interface uses tkinter, which already ships with Python. CI runs the suite
+on every version from 3.9 to 3.14, so both the floor and the ceiling are checked
+rather than assumed.
 
 ## Running it
 
@@ -170,18 +160,15 @@ their overruns arrive together. Adding independent distributions understates
 the variance of the total by `1 + rho(k-1)`, and the error lands on the upper
 tail where the P80 lives. The roll-up correlates the elements at a single
 default of 0.25 and reports what independence would have cost: on the bundled
-three-element demo, 1.21x on the standard deviation and about 16% of the P80
+three-element demo, 1.17x on the standard deviation and about 12% of the P80
 reserve.
 
-One approximation is disclosed rather than buried. `cost_core`'s WBS model
-takes distributions, not raw draws, so each element's simulated total is
-summarised as a lognormal before being correlated with the others. An element
-total is a sum of correlated lognormal lot costs and is not itself lognormal,
-so no two-parameter fit reproduces it exactly. Log-space matching was picked by
-measuring three candidates against the empirical percentiles: it tracks to
-about half a percent at P80 and beat both arithmetic moment-matching and a
-normal. A test bounds it, and every run says to read the program percentiles at
-that resolution.
+Each element goes into the correlation as its own simulated draws rather than
+as a distribution fitted to them, so its percentiles inside the program are
+exactly its percentiles on its own. Versions before 3.0.0 summarised each
+element as a lognormal first. That summary ran about six tenths of a percent
+high through the shoulder of the distribution, which is where the P80 lives, so
+program percentiles from 3.0.0 on sit a little lower than 2.x ones did.
 
 ### Three more views on tab 6
 
@@ -266,19 +253,20 @@ tool. Every sheet, chart, fit statistic and assumption is in there, and it
 opens anywhere Excel does.
 
 **Someone who needs to run it** needs Python. Where compiled executables are
-blocked, which is common, `python tools/build_pyz.py` bundles the three modules
-into a single `lot-cost-model.pyz`, about 220KB. That is a plain zip archive
-rather than a binary, and it runs with the Python already on the machine:
+blocked, which is common, `python tools/build_pyz.py` bundles the tool and a
+copy of the library into a single `lot-cost-model.pyz`, about 210KB. That is a
+plain zip archive rather than a binary, and it runs with the Python already on
+the machine:
 
 ```
 python lot-cost-model.pyz
 ```
 
-Be clear about what that does and does not solve. It removes "clone a
-repository and keep three files together"; it does not remove the
-dependencies. Whoever runs it still needs numpy, pandas and openpyxl, and
-cost_core as well for the risk half. If they have those, one file is the whole
-tool.
+Be clear about what that does and does not solve. It removes "clone two
+repositories and keep them in step"; it does not remove the dependencies.
+Whoever runs it still needs numpy, pandas, openpyxl and scipy, because those are
+compiled and can't be imported out of a zip. matplotlib isn't needed. If they
+have those four, one file is the whole tool.
 
 ## Saving a run
 
@@ -298,14 +286,20 @@ setting and says so, rather than quietly reproducing overstated costs.
 ## Knowing what produced a workbook
 
 The Analyst_Summary sheet opens with the tool version, the git revision when
-run from a checkout, a timestamp, and whether the rate projection was the
-corrected one or the legacy one:
+run from a checkout, the version of the library that did the arithmetic, a
+timestamp, and whether the rate projection was the corrected one or the legacy
+one:
 
 ```
-Tool version      2.1.0 (d71f8f9)
-Run timestamp     2026-08-21 19:45:45 Eastern Daylight Time
-Rate projection   corrected (projections satisfy the fitted equation)
+Tool version       3.0.0 (d71f8f9)
+cost_core version  1.0.0
+Run timestamp      2026-09-10 19:45:45 Eastern Daylight Time
+Rate projection    corrected (projections satisfy the fitted equation)
 ```
+
+The two versions move independently, because a change to the window touches no
+number and a change to the library touches no window. Run from the one-file
+archive, the library row says it was bundled rather than installed.
 
 Before 2.1.0 that row read `2.0-dev` on every build ever released, so a
 workbook could not be dated from the inside. If you are holding one that does
@@ -341,8 +335,7 @@ A WBS roll-up writes a second workbook alongside it, suffixed `_program`, with
 chart), `Program_SCurve`, `Program_Tornado`, `Buy_Sensitivity`,
 `Element_Influence`, and one sheet per element.
 
-The last three appear only when `cost_core` is installed and the risk analysis
-ran.
+The three `Risk_` sheets appear only when the risk analysis ran.
 
 ![Results tab](docs/screenshot-results.png)
 
@@ -354,9 +347,8 @@ estimate asks. Tab 5 answers it.
 
 ![Risk tab](docs/screenshot-risk.png)
 
-Rather than write the statistics a second time, this hands the same lots to
-`cost_core` and reports what comes back: a prediction interval on every
-forecast lot, and a Monte Carlo of the total buy with P50, P80 and P90. The
+You get a prediction interval on every forecast lot, and a Monte Carlo of the
+total buy with P50, P80 and P90. The
 simulation propagates two things, parameter uncertainty in the fitted slope and
 T1, which dominates on a short series, and lot-to-lot scatter, which is what
 makes the answer a prediction about a real lot rather than a statement about
@@ -364,22 +356,11 @@ where the line sits. Future lots are correlated at 0.30 by default because
 consecutive lots share a workforce and a schedule, and pretending otherwise
 lets the shocks cancel and understates the spread of the whole buy.
 
-The handoff is deliberately thin. `cost_core` is not asked to fit anything of
-its own: `projection_intervals` and `simulate_buy` take the very objects
-`run_lot_cost_model` already returned, so the intervals and the distribution
-describe **this tool's own selected model**, on its own lot positions, with the
-complexity factors already applied.
-
-That matters for a reason worth stating plainly. The number under the
-distribution is the same number on the projections sheet, identical by
-construction rather than by luck, so the P80 cannot quietly belong to a
-slightly different estimate than the one being briefed. There is no separate
-theory or fitting method to choose here, because there is no separate fit.
-
-The cost is that you lose an independent second opinion. An earlier version did
-refit through `cost_core` with a different estimator, which gave a genuine
-cross-check but meant two point estimates that had to be reconciled. Agreement
-by construction was the better trade.
+The intervals and the distribution are built on the same fit as the
+projections sheet, on the same lot positions, with the complexity factors
+already applied. So the number under the distribution is the number being
+briefed, not a slightly different estimate, and there's no second fit to
+reconcile, because there's only one engine.
 
 ### The S-curve
 
@@ -415,9 +396,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-224 tests with `cost_core` installed, fewer without (the risk ones skip). CI
-runs both, because "works when the optional dependency is missing" is a claim
-worth checking rather than asserting.
+254 tests. CI runs them on every version from 3.9 to 3.14, and separately
+builds the one-file archive and runs it from an environment holding only numpy,
+pandas, openpyxl and scipy, since that's the machine a colleague actually has.
 
 The most important ones are in `test_equation_conformance.py`. They retype each
 fitted equation, evaluate it for every projected lot, and assert it matches the

@@ -15,10 +15,6 @@ import pytest
 import lot_cost_model as M
 import risk as R
 
-pytestmark = pytest.mark.skipif(
-    not R.AVAILABLE, reason=f"cost_core not installed: {R.IMPORT_ERROR}"
-)
-
 
 def options(**kw):
     base = dict(n_iter=4000, seed=11)

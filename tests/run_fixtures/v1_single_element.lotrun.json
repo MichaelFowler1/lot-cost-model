@@ -1,0 +1,86 @@
+{
+  "format": "lot-cost-model-run",
+  "format_version": 1,
+  "saved_at": "2025-03-11T09:24:10-04:00",
+  "tool_version": "1.4.2",
+  "run_info": {
+    "RunID": "R-0007",
+    "Program": "LEGACY AIRFRAME",
+    "RunLabel": "pre-element build",
+    "BaseYear": "2025"
+  },
+  "settings": {
+    "CostUnitScale": 1.0,
+    "TotalScale": 1000.0,
+    "DefaultCF": 1.0,
+    "TGate": 2.0,
+    "FitPriorUnits": 0,
+    "FcstPriorUnits": 0,
+    "LegacyRateOmission": false
+  },
+  "analogy_lots": [
+    [
+      "2015",
+      "5",
+      "857.91"
+    ],
+    [
+      "2016",
+      "9",
+      "645.57"
+    ],
+    [
+      "2017",
+      "14",
+      "531.74"
+    ],
+    [
+      "2018",
+      "22",
+      "437.51"
+    ],
+    [
+      "2019",
+      "34",
+      "380.10"
+    ],
+    [
+      "2020",
+      "50",
+      "332.21"
+    ]
+  ],
+  "estimate_lots": [
+    [
+      "2028",
+      "12",
+      "1.15"
+    ],
+    [
+      "2029",
+      "20",
+      "1.15"
+    ],
+    [
+      "2030",
+      "30",
+      "1.15"
+    ],
+    [
+      "2031",
+      "40",
+      "1.15"
+    ],
+    [
+      "2032",
+      "25",
+      "1.15"
+    ],
+    [
+      "2033",
+      "10",
+      "1.15"
+    ]
+  ],
+  "output_path": ""
+}

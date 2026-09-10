@@ -3,6 +3,10 @@
 *.xls
 *.csv
 *.lotrun.json
+# ...except the run-file fixtures, which are test data and not anybody's
+# real program. They keep the suffix the tool actually writes, so the
+# test is reading exactly what a user would hand it.
+!tests/run_fixtures/*.lotrun.json
 
 __pycache__/
 *.py[cod]

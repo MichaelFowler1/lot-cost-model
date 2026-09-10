@@ -8,6 +8,7 @@ projections rather than just comparing the JSON to itself.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -32,11 +33,36 @@ class TestProvenance:
         assert "LEGACY" in legacy["Rate projection"]
         assert "overstated" in legacy["Rate projection"]
 
+    def test_names_the_library_that_did_the_arithmetic(self):
+        # Two versions now: this window, and the engine underneath it. A
+        # workbook naming only one could not say which of them a difference
+        # came from.
+        import cost_core
+
+        assert provenance_value("cost_core version").startswith(
+            cost_core.__version__
+        )
+
     def test_reaches_the_analyst_summary(self, analogy_df, estimate_df):
         _, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
-        summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
-        items = set(summary["Item"])
-        assert {"Tool version", "Run timestamp", "Rate projection"} <= items
+        summary = M.generate_analyst_summary(
+            ctx, {"Program": "TEST"}, provenance=M.provenance()
+        )
+        items = list(summary["Item"])
+        assert {
+            "Tool version", "cost_core version", "Run timestamp",
+            "Rate projection",
+        } <= set(items)
+
+    def test_the_two_versions_are_read_together(self, analogy_df, estimate_df):
+        # The library version sits directly under the tool version, where a
+        # reader looking for what produced the run finds both at once.
+        _, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
+        summary = M.generate_analyst_summary(
+            ctx, {"Program": "TEST"}, provenance=M.provenance()
+        )
+        items = list(summary["Item"])
+        assert items[items.index("Tool version") + 1] == "cost_core version"
 
     def test_the_summary_records_a_legacy_run_as_legacy(
         self, analogy_df, estimate_df
@@ -146,6 +172,7 @@ def wipe(app):
                 app.var_tgate, app.var_fitprior, app.var_fcstprior):
         var.set("0")
     app.var_legacy_rate.set(False)
+    app.var_outfile.set("")
 
 
 class TestRoundTrip:
@@ -387,8 +414,6 @@ class TestRollUpFillsTheResultsTab:
     def test_a_roll_up_fills_the_results_tab_for_the_selected_element(
         self, app, tmp_path
     ):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         self._two_elements(app)
         app.var_program.set("DEMO")
@@ -401,8 +426,6 @@ class TestRollUpFillsTheResultsTab:
         assert "1.1 Airframe" in app.lbl_result.cget("text")
 
     def test_it_does_not_steal_the_tab(self, app, tmp_path):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         self._two_elements(app)
         app.var_outfile.set(str(tmp_path / "out.xlsx"))
@@ -412,8 +435,6 @@ class TestRollUpFillsTheResultsTab:
         assert app.nb.tab(app.nb.select(), "text").strip().startswith("6.")
 
     def test_it_follows_the_selected_element(self, app, tmp_path):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         self._two_elements(app)
         app.var_outfile.set(str(tmp_path / "out.xlsx"))
@@ -476,8 +497,6 @@ class TestElementKindsInTheWindow:
         assert se["basis"] == ["1.1 Airframe"]
 
     def test_a_program_of_the_three_kinds_prices_from_the_window(self, app):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         fy = [r[0] for r in M.EXAMPLE_ESTIMATE]
         app.elements = [
@@ -506,8 +525,6 @@ class TestElementKindsInTheWindow:
 
     def test_a_factor_needs_no_lots_of_its_own(self, app):
         # It has no schedule to contribute, so it must not be asked for one.
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         app.elements = [
             {"name": "1.1 Airframe", "kind": "fitted",
@@ -554,8 +571,6 @@ class TestResultsFollowTheSelectedElement:
         app._refresh_element_list(0)
 
     def test_switching_element_updates_the_results_tab(self, app, tmp_path):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         self._three(app)
         app.var_outfile.set(str(tmp_path / "o.xlsx"))
@@ -571,8 +586,6 @@ class TestResultsFollowTheSelectedElement:
         assert len(app.tree.get_children()) > 0
 
     def test_a_factor_element_shows_no_fit_statistics(self, app, tmp_path):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         self._three(app)
         app.var_outfile.set(str(tmp_path / "o.xlsx"))
@@ -585,8 +598,6 @@ class TestResultsFollowTheSelectedElement:
         assert "1.4 SE" in text and "no curve" in text
 
     def test_an_element_with_no_run_says_so(self, app, tmp_path):
-        if M.wbs is None:
-            pytest.skip("wbs.py not importable")
         wipe(app)
         self._three(app)
         app.var_outfile.set(str(tmp_path / "o.xlsx"))
@@ -599,8 +610,6 @@ class TestResultsFollowTheSelectedElement:
         assert "Nothing run for 1.9 Added later" in app.lbl_result.cget("text")
 
     def test_switching_clears_another_elements_intervals(self, app, tmp_path):
-        if M.wbs is None or M.risk is None or not M.risk.AVAILABLE:
-            pytest.skip("cost_core not installed")
         wipe(app)
         self._three(app)
         app.var_outfile.set(str(tmp_path / "o.xlsx"))
@@ -745,3 +754,176 @@ class TestGridsFollowTheElementKind:
         app.load_example()
         assert "fitted" in seen.get("msg", "")
         assert app.grid_estimate.get_rows() == []
+
+
+# --------------------------------------------------------------------------
+# Files on disk, not dicts built in the test.
+#
+# Everything above builds its own run state and hands it straight back, so a
+# change to what the window writes changes both sides of the comparison at
+# once and nothing fails. These read real files that were saved once and then
+# left alone, which is the only way a compatibility promise can be tested at
+# all: the version 1 file cannot be produced by any build of this tool any
+# more, so it has to be kept rather than generated.
+#
+# The list is globbed rather than written out, so dropping another file into
+# the directory covers it without touching this file.
+# --------------------------------------------------------------------------
+
+FIXTURE_DIR = Path(__file__).parent / "run_fixtures"
+FIXTURES = sorted(FIXTURE_DIR.glob("*" + M.RUN_SUFFIX))
+
+
+def fixture(name: str) -> dict:
+    return M.read_run_file(str(FIXTURE_DIR / (name + M.RUN_SUFFIX)))
+
+
+class TestEveryFixtureFile:
+    def test_there_are_fixtures_to_read(self):
+        # A glob that quietly matches nothing would turn every parametrised
+        # test below into zero tests and still report success.
+        assert FIXTURES, "no run fixtures found in {}".format(FIXTURE_DIR)
+
+    @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
+    def test_it_is_readable_and_in_a_format_this_build_knows(self, path):
+        data = M.read_run_file(str(path))
+        assert data["format"] == M.RUN_FORMAT
+        assert 1 <= data["format_version"] <= M.RUN_FORMAT_VERSION
+
+    @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
+    def test_it_loads_into_the_window_and_leaves_a_usable_element(
+        self, app, monkeypatch, path
+    ):
+        # showwarning would block on the legacy file, so it is swallowed here
+        # and asserted on properly further down.
+        monkeypatch.setattr(M.messagebox, "showwarning", lambda *a, **k: None)
+        wipe(app)
+        app.apply_run_state(M.read_run_file(str(path)))
+        assert app.elements, "{} loaded no elements".format(path.name)
+        assert all(e["name"] for e in app.elements)
+        assert all(
+            e["kind"] in ("fitted", "factor", "amount") for e in app.elements
+        )
+
+    def test_the_kept_files_still_cover_both_formats(self):
+        # If somebody regenerates the fixtures from the current window they
+        # will all come out version 2, and the compatibility promise stops
+        # being tested without anything failing.
+        versions = {
+            M.read_run_file(str(p))["format_version"] for p in FIXTURES
+        }
+        assert 1 in versions, "the version 1 fixture proves old files open"
+        assert 2 in versions
+
+
+class TestTheVersionOneFixture:
+    def test_it_opens_as_a_single_element(self, app):
+        wipe(app)
+        data = fixture("v1_single_element")
+        assert data["format_version"] == 1
+        assert "elements" not in data
+        app.apply_run_state(data)
+
+        assert len(app.elements) == 1
+        assert app.elements[0]["kind"] == "fitted"
+        assert app.grid_analogy.get_rows() == [
+            list(r) for r in M.EXAMPLE_ANALOGY
+        ]
+        assert app.var_program.get() == "LEGACY AIRFRAME"
+
+    def test_it_still_prices(self, app):
+        # Opening it is not enough. A file this old has to reach the engine.
+        wipe(app)
+        app.apply_run_state(fixture("v1_single_element"))
+        proj, _ = M.run_lot_cost_model(
+            app._collect_analogy(),
+            app._collect_estimate(),
+            app._collect_overrides(),
+        )
+        assert len(proj) == len(M.EXAMPLE_ESTIMATE)
+
+
+class TestTheFullFixture:
+    def test_it_round_trips_its_elements_and_kinds(self, app):
+        wipe(app)
+        saved = fixture("v2_all_element_kinds")
+        app.apply_run_state(saved)
+
+        assert [e["name"] for e in app.elements] == [
+            "1.1 Airframe", "1.4 SE", "1.6 Tooling"
+        ]
+        assert [e["kind"] for e in app.elements] == [
+            "fitted", "factor", "amount"
+        ]
+        assert app.elements[1]["factor"] == pytest.approx(0.12)
+        assert app.elements[1]["basis"] == ["1.1 Airframe"]
+
+        # Saving it again reproduces the file, so nothing was dropped on the
+        # way in. saved_at and tool_version are the two fields that are meant
+        # to change, because they are stamped fresh on every save.
+        again = app.run_state()
+        for key in ("saved_at", "tool_version"):
+            again.pop(key)
+            saved.pop(key)
+        assert again == saved
+
+    def test_it_carries_the_run_info_and_the_risk_settings(self, app):
+        wipe(app)
+        app.apply_run_state(fixture("v2_all_element_kinds"))
+        assert app.var_runid.get() == "R-0042"
+        assert app.var_program.get() == "FULL PROGRAM"
+        assert app.var_label.get() == "every element kind"
+        assert app.var_baseyear.get() == "2028"
+        assert app.var_fcstprior.get() == "40"
+        assert app.var_seed.get() == "11"
+        assert app.var_do_risk.get() is True
+
+    def test_it_rolls_up_from_the_file(self, app):
+        # The point of keeping a full file: a run saved months ago has to
+        # reach the library and come back with numbers.
+        wipe(app)
+        app.apply_run_state(fixture("v2_all_element_kinds"))
+        rolled = M.wbs.roll_up(app.build_program(), simulate=False)
+        by = {r.name: r for r in rolled.elements}
+        assert by["1.4 SE"].total == pytest.approx(
+            0.12 * by["1.1 Airframe"].total, rel=1e-9
+        )
+        assert by["1.6 Tooling"].total == pytest.approx(6_000_000.0)
+
+
+class TestTheMinimalFixture:
+    def test_it_is_a_version_two_file_with_one_element(self, app):
+        wipe(app)
+        data = fixture("v2_minimal")
+        assert data["format_version"] == 2
+        assert len(data["elements"]) == 1
+        app.apply_run_state(data)
+        assert len(app.elements) == 1
+        assert app.var_legacy_rate.get() is False
+
+
+class TestTheLegacyRateFixture:
+    def test_it_restores_the_setting_and_says_so(self, app, monkeypatch):
+        wipe(app)
+        data = fixture("v2_legacy_rate_omission")
+        assert data["settings"]["LegacyRateOmission"] is True
+
+        warned = []
+        monkeypatch.setattr(
+            M.messagebox, "showwarning",
+            lambda title, msg: warned.append((title, msg)),
+        )
+        app.apply_run_state(data)
+
+        assert app.var_legacy_rate.get() is True
+        assert warned, "opening a legacy run must say so"
+        assert "overstated" in warned[0][1]
+
+    def test_the_setting_reaches_the_provenance_stamp(self, app, monkeypatch):
+        # Restoring the tick is only half of it. The workbook the run writes
+        # has to admit which projection produced the numbers.
+        monkeypatch.setattr(M.messagebox, "showwarning", lambda *a, **k: None)
+        wipe(app)
+        app.apply_run_state(fixture("v2_legacy_rate_omission"))
+        stamp = M.provenance(app._collect_overrides())
+        assert "LEGACY" in stamp["Rate projection"]

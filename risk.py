@@ -1,22 +1,20 @@
-"""Prediction intervals and Monte Carlo, borrowed from cost_core.
+"""Prediction intervals and Monte Carlo for the window's risk tab.
 
-The deterministic side of this tool (learning curve, rate, LC+Rate, model
-selection, complexity factors) is its own. What it never had was any statement
-of uncertainty. Rather than write that a second time, this module hands the
-finished fit to `cost_core` from the cost-risk-toolkit and reports what comes
-back.
+The library computes the distribution; this module is the adapter between it
+and what the tab has to put on screen. `cost_core.lotmodel` returns intervals
+and a simulated buy as bare numbers, and has no notion of the analyst's
+settings, of the notes that qualify the answer, or of the two-column table the
+tab and the Risk_Summary sheet are both drawn from. Those are this file, and
+they are nearly the whole of it: the only arithmetic below is three column
+sums and a percentile table.
 
-The handoff is deliberately thin. `cost_core.lots.projection_intervals` and
-`simulate_buy` take the very objects `run_lot_cost_model` already returns, so
-nothing is refitted and nothing is re-derived: the intervals and the simulation
-describe *this tool's own* selected model, on this tool's own lot positions,
-with the complexity factors already applied. The point estimate underneath the
+The handoff is deliberately thin. `projection_intervals` and `simulate_buy`
+take the very objects `run_lot_cost_model` already returned, so nothing is
+refitted and nothing is re-derived: the intervals and the simulation describe
+the model the window already selected, on the same lot positions, with the
+complexity factors already applied. The point estimate underneath the
 distribution is therefore identical to the one on the projections sheet, by
 construction rather than by luck.
-
-An earlier version of this bridge fitted its own curve through cost_core and
-redirected a private hook to line the lot positions up. That is all gone; the
-public functions do the job directly.
 """
 
 from __future__ import annotations
@@ -26,24 +24,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-try:
-    from cost_core.lots import (
-        projection_intervals,
-        selected_model_name,
-        simulate_buy,
-    )
-
-    AVAILABLE = True
-    IMPORT_ERROR = ""
-except Exception as exc:  # pragma: no cover - depends on the environment
-    AVAILABLE = False
-    IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
-
-INSTALL_HINT = (
-    "The risk analysis needs cost_core, which is not installed.\n\n"
-    "Install it with:\n"
-    "    pip install git+https://github.com/MichaelFowler1/cost-risk-toolkit.git\n\n"
-    "Everything else in this tool works without it."
+from cost_core.lotmodel import (
+    projection_intervals,
+    selected_model_name,
+    simulate_buy,
 )
 
 
@@ -103,13 +87,39 @@ def _scurve_frame(totals, step: int = 1) -> pd.DataFrame:
     )
 
 
-def _stat(projections: pd.DataFrame, model: str, suffix: str, default=np.nan):
-    """Read one fit statistic for the selected model off the projections."""
-    prefix = {"LC": "LC", "Rate": "Rate", "LC+Rate": "LC+Rate"}.get(model, "LC")
-    col = f"{prefix} {suffix}"
-    if col in projections.columns and len(projections):
-        return projections[col].iloc[0]
-    return default
+#: Where each selected model's fit sits in the engine's context.
+_FIT_KEY = {"LC": "mdl_lc", "Rate": "mdl_rt", "LC+Rate": "mdl_lcr"}
+
+
+def _fit_stats(ctx: dict, model: str) -> dict:
+    """T1, slope, residual spread and degrees of freedom, from the fit itself.
+
+    These used to be read back out of the projections sheet, one column per
+    model, because the engine was a private copy that kept its fits to itself
+    and the sheet was the only place they surfaced. The engine is the
+    library's now and its context carries the three fitted models, so ask
+    them directly.
+
+    The rounding is the projections sheet's, kept so the risk table and the
+    sheet quote the same figures rather than differing in the last place.
+    """
+    fit = ctx.get(_FIT_KEY.get(model, "mdl_lc"))
+    if not fit:
+        return {"t1": np.nan, "slope": np.nan, "sigma": np.nan, "df": 0}
+
+    beta = fit.get("Beta") or []
+    scale = float(ctx.get("cfg", {}).get("CostUnitScale", 1.0) or 1.0)
+    t1 = round(float(np.exp(beta[0])) * scale, 2) if len(beta) > 0 else np.nan
+    # Index 1 is the learning coefficient for LC and LC+Rate and the rate
+    # coefficient for Rate, which is exactly the slope each one is quoted on.
+    slope = round((2 ** float(beta[1])) * 100, 2) if len(beta) > 1 else np.nan
+    sigma = fit.get("SEy", np.nan)
+    sigma = round(float(sigma), 4) if pd.notna(sigma) else np.nan
+    try:
+        dof = int(fit.get("DF", 0))
+    except (TypeError, ValueError):
+        dof = 0
+    return {"t1": t1, "slope": slope, "sigma": sigma, "df": dof}
 
 
 def run_risk(
@@ -128,12 +138,9 @@ def run_risk(
         opts: Analyst choices for this run.
 
     Raises:
-        RuntimeError: If cost_core is not installed, or it could not read a
-            selected model out of the summary.
+        RuntimeError: If it could not read a selected model out of the
+            summary.
     """
-    if not AVAILABLE:
-        raise RuntimeError(INSTALL_HINT)
-
     try:
         model = selected_model_name(summary)
     except Exception as exc:
@@ -184,11 +191,8 @@ def run_risk(
         if col in projections.columns and col not in intervals.columns:
             intervals[col] = projections[col].to_numpy()
 
-    dof = _stat(projections, model, "df")
-    try:
-        dof = int(dof)
-    except (TypeError, ValueError):
-        dof = 0
+    stats = _fit_stats(ctx, model)
+    dof = stats["df"]
     if dof and dof <= 2:
         warns.append(
             f"Only {dof} degree(s) of freedom. Read the percentiles rather "
@@ -204,15 +208,9 @@ def run_risk(
         model=str(model),
         n_obs=n_keep,
         df=dof,
-        t1=float(_stat(projections, model, "T1 First Unit Cost ($K)")),
-        slope=float(
-            _stat(
-                projections,
-                model,
-                "Learning Slope (%)" if model != "Rate" else "Slope (%)",
-            )
-        ),
-        sigma=float(_stat(projections, model, "SEy")),
+        t1=float(stats["t1"]),
+        slope=float(stats["slope"]),
+        sigma=float(stats["sigma"]),
         intervals=intervals,
         total_point=total_point,
         total_lower=total_lower,

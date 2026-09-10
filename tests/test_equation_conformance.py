@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from cost_core.lotmodel import LEGACY_KEY, lmp_func, track_units
+
 import lot_cost_model as M
 
 # Invented data, chosen because it selects LC+Rate and so exercises both the
@@ -61,9 +63,9 @@ def rate_backcast() -> pd.DataFrame:
 
 def midpoints(quantities, b, prior=0):
     """Recompute midpoints rather than reading the rounded display column."""
-    spans = M.track_units(np.array(quantities, dtype=float), prior)
+    spans = track_units(np.array(quantities, dtype=float), prior)
     return np.array(
-        [M.lmp_func(s["S"], s["E"], q, b) for s, q in zip(spans, quantities)]
+        [lmp_func(s["S"], s["E"], q, b) for s, q in zip(spans, quantities)]
     )
 
 
@@ -267,7 +269,7 @@ class TestLegacySwitch:
                 M.run_lot_cost_model(
                     rate_analogy,
                     rate_backcast,
-                    {M.LEGACY_KEY: value},
+                    {LEGACY_KEY: value},
                 )
 
 

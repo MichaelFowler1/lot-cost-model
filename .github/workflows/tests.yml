@@ -7,13 +7,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The full suite, including the cost_core bridge. cost_core needs 3.11+.
+  # One job now. There used to be a second, "without cost_core", because the
+  # tool carried its own copy of the engine and only the risk halves needed the
+  # library. The engine, the WBS roll-up and the workbook writers are all
+  # cost_core's now, so there is nothing left to run without it and nothing for
+  # that job to assert.
+  #
+  # It was also where the supported floor was checked, so the floor moves here:
+  # every annotation is deferred with `from __future__ import annotations`, so
+  # PEP 604 syntax costs nothing at runtime and 3.9 is the real floor rather
+  # than 3.10. cost_core holds the same floor. The README says 3.9, so CI has
+  # to hold it.
   tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -30,31 +40,35 @@ jobs:
       - name: Check tkinter imports
         run: python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
 
+      # requirements.txt pins cost_core at the released tag, so this is the
+      # only place the library version is stated.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
-          pip install "git+https://github.com/MichaelFowler1/cost-risk-toolkit.git"
 
       - name: Confirm cost_core is present
-        run: python -c "import risk; assert risk.AVAILABLE, risk.IMPORT_ERROR; print('cost_core ok')"
+        run: |
+          python -c "import cost_core; print('cost_core', cost_core.__version__)"
 
       - name: Run tests
         run: pytest -v
 
-  # The tool must also work with cost_core absent: the risk halves go dark and
-  # everything else carries on. This is also where the supported floor is
-  # checked. Every annotation is deferred with `from __future__ import
-  # annotations`, so PEP 604 syntax costs nothing at runtime and 3.9 is the
-  # real floor rather than 3.10. The README says 3.9, so CI has to hold it.
-  without-cost-core:
+  # The one-file build is a deliverable in its own right and nothing else in
+  # this workflow exercises it: the suite imports the tool from the checkout.
+  # So build the archive and run it from a venv holding only the four compiled
+  # dependencies it cannot carry, with the checkout off the path, which is the
+  # machine a colleague actually has.
+  archive:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10"]
-    name: without cost_core (python ${{ matrix.python-version }})
+        # The floor and the ceiling. The archive is plain source, so the
+        # versions in between add nothing the suite above does not cover.
+        python-version: ["3.9", "3.14"]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -65,14 +79,38 @@ jobs:
       - name: Install Tk
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 
-      - name: Install dependencies
+      # The build vendors whichever cost_core this interpreter imports, so it
+      # needs the library installed here first. requirements.txt pins it at
+      # the released tag, which has to exist on the remote to resolve.
+      - name: Build the archive
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          python tools/build_pyz.py --out "$RUNNER_TEMP/dist"
 
-      - name: Confirm cost_core is absent
-        run: python -c "import risk; assert not risk.AVAILABLE; print('correctly unavailable')"
-
-      - name: Run tests
-        run: pytest -v
+      - name: Run it from a venv holding only numpy, pandas, openpyxl and scipy
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python -m venv "$RUNNER_TEMP/bare"
+          "$RUNNER_TEMP/bare/bin/pip" install numpy pandas openpyxl scipy
+          "$RUNNER_TEMP/bare/bin/python" - "$RUNNER_TEMP/dist/lot-cost-model.pyz" <<'EOF'
+          import importlib.util, sys
+          arc = sys.argv[1]
+          assert importlib.util.find_spec("matplotlib") is None, "matplotlib leaked in"
+          assert importlib.util.find_spec("cost_core") is None, "cost_core installed outside the archive"
+          sys.path.insert(0, arc)
+          import lot_cost_model as M, cost_core
+          assert M.__file__.startswith(arc) and cost_core.__file__.startswith(arc)
+          import pandas as pd
+          an = pd.DataFrame({"Lot": range(1, 7), "Lot FY": range(2015, 2021),
+                             "Qty": [float(r[1]) for r in M.EXAMPLE_ANALOGY],
+                             "AUC ($K)": [float(r[2]) for r in M.EXAMPLE_ANALOGY]})
+          es = pd.DataFrame({"Lot": range(1, 7), "Lot FY": [int(r[0]) for r in M.EXAMPLE_ESTIMATE],
+                             "Qty": [float(r[1]) for r in M.EXAMPLE_ESTIMATE],
+                             "Complexity": [float(r[2]) for r in M.EXAMPLE_ESTIMATE]})
+          proj, ctx = M.run_lot_cost_model(an, es)
+          res = M.risk.run_risk(ctx, proj, M.generate_analyst_summary(ctx, {"Program": "CI"}),
+                                M.risk.RiskOptions(n_iter=2000, seed=11))
+          print("archive ok: cost_core", cost_core.__version__, "| P80", round(res.p80, 2))
+          EOF

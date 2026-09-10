@@ -6,62 +6,64 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from cost_core.lotmodel import find_col, lmp_func, to_num, track_units
+
 import lot_cost_model as M
 
 
 class TestLotMidpoint:
     def test_single_unit_lot_is_its_own_midpoint(self):
-        assert M.lmp_func(5, 5, 1, -0.15) == 5.0
+        assert lmp_func(5, 5, 1, -0.15) == 5.0
 
     def test_zero_slope_gives_the_arithmetic_midpoint(self):
         # With no learning the midpoint is just the middle of the lot.
-        assert M.lmp_func(1, 11, 11, 0.0) == pytest.approx(6.0)
+        assert lmp_func(1, 11, 11, 0.0) == pytest.approx(6.0)
 
     def test_midpoint_lies_inside_the_lot(self):
-        mid = M.lmp_func(11, 30, 20, -0.152)
+        mid = lmp_func(11, 30, 20, -0.152)
         assert 11 <= mid <= 30
 
     def test_midpoint_moves_earlier_as_learning_steepens(self):
         # A steeper curve weights the cheap late units less, pulling the
         # cost-average unit toward the start of the lot.
-        shallow = M.lmp_func(11, 30, 20, -0.05)
-        steep = M.lmp_func(11, 30, 20, -0.40)
+        shallow = lmp_func(11, 30, 20, -0.05)
+        steep = lmp_func(11, 30, 20, -0.40)
         assert steep < shallow
 
     def test_unknown_slope_gives_nan(self):
-        assert pd.isna(M.lmp_func(1, 10, 10, None))
-        assert pd.isna(M.lmp_func(1, 10, 10, np.nan))
+        assert pd.isna(lmp_func(1, 10, 10, None))
+        assert pd.isna(lmp_func(1, 10, 10, np.nan))
 
     def test_b_equals_minus_one_uses_the_log_branch(self):
         # b = -1 is a removable singularity; it must not divide by zero.
-        val = M.lmp_func(1, 10, 10, -1.0)
+        val = lmp_func(1, 10, 10, -1.0)
         assert np.isfinite(val) and val > 0
 
 
 class TestUnitTracking:
     def test_lots_are_contiguous_from_unit_one(self):
-        se = M.track_units(np.array([9, 21, 22]), 0)
+        se = track_units(np.array([9, 21, 22]), 0)
         assert [(d["S"], d["E"]) for d in se] == [(1, 9), (10, 30), (31, 52)]
 
     def test_prior_units_shift_the_whole_series(self):
-        se = M.track_units(np.array([5, 5]), 100)
+        se = track_units(np.array([5, 5]), 100)
         assert [(d["S"], d["E"]) for d in se] == [(101, 105), (106, 110)]
 
 
 class TestHelpers:
     def test_find_col_is_case_and_space_insensitive(self):
         cols = ["Lot FY", "AUC ($K)"]
-        assert M.find_col(cols, ["auc ($k)"]) == "AUC ($K)"
-        assert M.find_col(cols, ["nope", " lot fy "]) == "Lot FY"
+        assert find_col(cols, ["auc ($k)"]) == "AUC ($K)"
+        assert find_col(cols, ["nope", " lot fy "]) == "Lot FY"
 
     def test_find_col_returns_none_when_absent(self):
-        assert M.find_col(["a"], ["b"]) is None
+        assert find_col(["a"], ["b"]) is None
 
     def test_to_num_strips_currency_formatting(self):
-        assert M.to_num("$1,234.50") == pytest.approx(1234.50)
-        assert M.to_num(7) == 7.0
-        assert pd.isna(M.to_num("not a number"))
-        assert pd.isna(M.to_num(""))
+        assert to_num("$1,234.50") == pytest.approx(1234.50)
+        assert to_num(7) == 7.0
+        assert pd.isna(to_num("not a number"))
+        assert pd.isna(to_num(""))
 
 
 class TestFit:

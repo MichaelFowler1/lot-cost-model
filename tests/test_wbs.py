@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import wbs
+from cost_core import program as wbs
 
 FY_HIST = [2015, 2016, 2017, 2018, 2019, 2020]
 FY_BUY = [2028, 2029, 2030, 2031, 2032, 2033]
@@ -211,19 +211,11 @@ class TestValidation:
             wbs.roll_up(program(thin), simulate=False)
 
 
-# The correlated roll-up needs cost_core.
-risk = pytest.mark.skipif(
-    not wbs.RISK_AVAILABLE,
-    reason=f"cost_core not installed: {wbs.RISK_IMPORT_ERROR}",
-)
-
-
 @pytest.fixture(scope="module")
 def simulated():
     return wbs.roll_up(program(), n_iter=8000, seed=11)
 
 
-@risk
 class TestProgramRisk:
     def test_percentiles_are_ordered(self, simulated):
         assert simulated.p50 < simulated.p80 < simulated.p90
@@ -299,7 +291,6 @@ class TestProgramRisk:
         assert naive > indep.p80
 
 
-@risk
 class TestSummaries:
     def test_element_summary_ends_with_the_program_total(self, simulated):
         table = wbs.element_summary(simulated)
@@ -312,51 +303,6 @@ class TestSummaries:
         items = set(wbs.program_summary(simulated)["Item"])
         assert "Program P80 ($)" in items
         assert "Reserve to P80 ($)" in items
-
-
-class TestWithoutCostCore:
-    def test_the_point_estimate_still_rolls_up(self, monkeypatch):
-        # The deterministic total must not depend on the risk library.
-        monkeypatch.setattr(wbs, "RISK_AVAILABLE", False)
-        rolled = wbs.roll_up(program(), simulate=True)
-        assert rolled.total > 0
-        assert rolled.p80 is None
-        assert any("cost_core" in w for w in rolled.warnings)
-
-
-@risk
-class TestDistributionHandoff:
-    """cost_core's WBS model takes distributions, not draws.
-
-    Summarising each element as a lognormal to get it there costs accuracy,
-    so the cost is measured and bounded rather than assumed away.
-    """
-
-    def test_the_fitted_spec_tracks_the_element_it_replaces(self, simulated):
-        from scipy import stats
-
-        for e in simulated.elements:
-            spec = wbs._lognormal_spec(e.totals)
-            fitted = stats.lognorm(s=spec["sigma"], scale=np.exp(spec["mean"]))
-            for level in (0.05, 0.50, 0.80, 0.90, 0.95):
-                empirical = float(np.percentile(e.totals, level * 100))
-                assert fitted.ppf(level) == pytest.approx(
-                    empirical, rel=wbs.SPEC_TOLERANCE
-                ), f"{e.name} at P{level * 100:.0f}"
-
-    def test_the_median_survives_the_handoff_almost_exactly(self, simulated):
-        from scipy import stats
-
-        for e in simulated.elements:
-            spec = wbs._lognormal_spec(e.totals)
-            fitted = stats.lognorm(s=spec["sigma"], scale=np.exp(spec["mean"]))
-            assert fitted.ppf(0.5) == pytest.approx(
-                float(np.median(e.totals)), rel=0.002
-            )
-
-    def test_the_approximation_is_disclosed(self, simulated):
-        text = " ".join(simulated.notes)
-        assert "lognormal" in text and "half a percent" in text
 
 
 class TestManyElements:
@@ -401,7 +347,6 @@ class TestManyElements:
         )
 
 
-@risk
 class TestTornado:
     def test_shares_add_to_one(self, simulated):
         # The covariance decomposition Cov(X_i, T)/Var(T) sums to exactly one,
@@ -432,7 +377,6 @@ class TestTornado:
         assert rolled.tornado is None
 
 
-@risk
 class TestInfluence:
     def test_one_row_per_analogy_lot(self, rolled):
         for e in rolled.elements:
@@ -650,7 +594,6 @@ def full():
     return wbs.roll_up(se_pm_program(), n_iter=8000, seed=11)
 
 
-@risk
 class TestDerivedElementsUnderRisk:
     """Derived kinds inherit uncertainty; they never invent it."""
 

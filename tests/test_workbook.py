@@ -8,14 +8,19 @@ feature survived is to read it back out of the XML.
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
 import openpyxl
 import pytest
+
+from cost_core.reporting import lot_workbook as LW
 
 import lot_cost_model as M
 import risk as R
@@ -39,9 +44,7 @@ def plain_book(tmp_path_factory, analogy_df, estimate_df):
 
 @pytest.fixture(scope="module")
 def risk_book(tmp_path_factory, analogy_df, estimate_df, cfg):
-    """A workbook including the risk sheets, or skipped without cost_core."""
-    if not R.AVAILABLE:
-        pytest.skip(f"cost_core not installed: {R.IMPORT_ERROR}")
+    """A workbook including the risk sheets."""
     path = tmp_path_factory.mktemp("wb") / "risk.xlsx"
     proj, ctx = M.run_lot_cost_model(analogy_df, estimate_df)
     summary = M.generate_analyst_summary(ctx, {"Program": "TEST"})
@@ -181,11 +184,11 @@ class TestChartLayout:
         width = 18
         cols = [
             openpyxl.utils.column_index_from_string(
-                re.match(r"([A-Z]+)", M._chart_anchor(i, width)).group(1)
+                re.match(r"([A-Z]+)", LW._chart_anchor(i, width)).group(1)
             )
             for i in range(3)
         ]
-        step_cm = (cols[1] - cols[0]) * M._COL_CM
+        step_cm = (cols[1] - cols[0]) * LW._COL_CM
         assert cols == sorted(cols)
         assert step_cm > width, (
             f"charts step {step_cm:.1f}cm apart but are {width}cm wide"
@@ -219,13 +222,13 @@ class TestSCurveSheet:
             label = ws.cell(row=1, column=name_col).value
             cost = ws.cell(row=2, column=cost_col).value
             assert "$" in label
-            assert label.split()[-1] == M._money_short(cost)
+            assert label.split()[-1] == LW._money_short(cost)
 
     def test_money_short_picks_a_sensible_unit(self):
-        assert M._money_short(250_000_000) == "$250.0M"
-        assert M._money_short(2_500_000_000) == "$2.5B"
-        assert M._money_short(45_200) == "$45.2K"
-        assert M._money_short(870) == "$870"
+        assert LW._money_short(250_000_000) == "$250.0M"
+        assert LW._money_short(2_500_000_000) == "$2.5B"
+        assert LW._money_short(45_200) == "$45.2K"
+        assert LW._money_short(870) == "$870"
 
     def test_markers_are_named_in_the_legend_not_beside_the_curve(
         self, risk_book
@@ -246,33 +249,147 @@ class TestSCurveSheet:
         assert len(elements(xml, "ser")) == 3
 
 
+# Run inside the archive by a subprocess, not here. It prices the bundled
+# example lots and reports where each module was imported from, which is the
+# only way to tell an archive that works from an archive that quietly fell
+# back to the repository sitting next to it.
+ARCHIVE_PROBE = r'''
+import json
+import sys
+
+archive = sys.argv[1]
+sys.path.insert(0, archive)
+
+# An editable install of the library puts a finder on sys.meta_path, and
+# meta_path is consulted before sys.path. Drop it, or a passing test would
+# only prove the checkout it was built from still imports.
+sys.meta_path = [
+    f for f in sys.meta_path
+    if not getattr(f, "__module__", "").startswith("__editable__")
+]
+
+import pandas as pd
+
+import cost_core
+import lot_cost_model as M
+import risk
+
+analogy = pd.DataFrame(
+    [
+        (i + 1, int(fy), float(qty), float(auc))
+        for i, (fy, qty, auc) in enumerate(M.EXAMPLE_ANALOGY)
+    ],
+    columns=["Lot", "Lot FY", "Qty", "AUC ($K)"],
+)
+estimate = pd.DataFrame(
+    [
+        (i + 1, int(fy), float(qty), float(cf))
+        for i, (fy, qty, cf) in enumerate(M.EXAMPLE_ESTIMATE)
+    ],
+    columns=["Lot", "Lot FY", "Qty", "Complexity"],
+)
+proj, ctx = M.run_lot_cost_model(analogy, estimate)
+
+print(json.dumps({
+    "app_file": M.__file__,
+    "risk_file": risk.__file__,
+    "cost_core_file": cost_core.__file__,
+    "tool_version": M.TOOL_VERSION,
+    "lots": len(proj),
+    "total": float(proj["LC+Rate Lot Cost After Complexity ($)"].sum()),
+}))
+'''
+
+
+@pytest.fixture(scope="module")
+def archive(tmp_path_factory):
+    """Build the .pyz once. Every test below reads the same archive."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import build_pyz
+
+    return build_pyz.build(ROOT, tmp_path_factory.mktemp("pyz"))
+
+
 class TestSingleFileBuild:
     """The tool has to survive being bundled into one archive."""
 
-    def test_it_builds_and_contains_every_module(self, tmp_path):
-        import zipfile
-        sys.path.insert(0, str(ROOT / "tools"))
-        import build_pyz
+    def test_it_builds_and_contains_every_module(self, archive):
+        assert archive.exists()
+        names = set(zipfile.ZipFile(archive).namelist())
 
-        target = build_pyz.build(ROOT, tmp_path)
-        assert target.exists()
-        names = set(zipfile.ZipFile(target).namelist())
-        assert {"__main__.py", "lot_cost_model.py", "risk.py",
-                "wbs.py"} <= names
+        # The window and its entry point.
+        assert {"__main__.py", "lot_cost_model.py", "risk.py"} <= names
+        # wbs.py moved into the library. If it comes back, something is
+        # shipping a second copy of the roll-up.
+        assert "wbs.py" not in names
 
-    def test_the_archive_imports_and_prices(self, tmp_path):
-        # A zipapp is only useful if Python can import straight out of it.
-        sys.path.insert(0, str(ROOT / "tools"))
-        import build_pyz
+        # The vendored library, and the modules the window actually calls
+        # by name. Without these the archive imports and then dies on the
+        # first Run Model.
+        assert {
+            "cost_core/__init__.py",
+            "cost_core/lotmodel/__init__.py",
+            "cost_core/lotmodel/engine.py",
+            "cost_core/program/rollup.py",
+            "cost_core/reporting/lot_workbook.py",
+            "cost_core/reporting/program_workbook.py",
+        } <= names
 
-        target = build_pyz.build(ROOT, tmp_path)
-        sys.path.insert(0, str(target))
-        try:
-            import importlib
-            mod = importlib.import_module("lot_cost_model")
-            assert mod.TOOL_VERSION
-        finally:
-            sys.path.remove(str(target))
+        # Every subpackage came with it, whatever the library's shape is
+        # today. Copying only the top level leaves an archive that imports
+        # cost_core and then fails on the first submodule.
+        package = pathlib.Path(LW.__file__).resolve().parent.parent
+        expected = {
+            f"cost_core/{sub.parent.relative_to(package).as_posix()}/__init__.py"
+            for sub in package.rglob("__init__.py")
+            if sub.parent != package
+        }
+        assert expected <= names, sorted(expected - names)
+
+    def test_the_archive_is_compressed(self, archive):
+        # zipapp stores rather than deflates unless asked, which left the
+        # archive about three times the size it needs to be.
+        info = zipfile.ZipFile(archive).getinfo("lot_cost_model.py")
+        assert info.compress_type == zipfile.ZIP_DEFLATED
+        assert info.compress_size < info.file_size
+
+    def test_it_carries_no_tests_or_scratch(self, archive):
+        names = zipfile.ZipFile(archive).namelist()
+        for name in names:
+            parts = pathlib.PurePosixPath(name).parts
+            assert "__pycache__" not in parts, name
+            assert "tests" not in parts, name
+            assert not name.endswith((".pyc", ".pyo")), name
+            # Model output and built archives. Both are gitignored, so they
+            # are only ever here by accident, and a workbook full of real
+            # program data is not something to hand a colleague by mistake.
+            assert not name.endswith((".xlsx", ".xls", ".csv", ".pyz")), name
+
+    def test_the_archive_imports_and_prices(self, archive, tmp_path):
+        # This used to import lot_cost_model in-process, where the repository
+        # copy was already in sys.modules, so it passed without ever opening
+        # the archive. Run it out of process, from a working directory that
+        # is not the repository, with PYTHONPATH cleared.
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        env["MPLBACKEND"] = "Agg"
+        done = subprocess.run(
+            [sys.executable, "-c", ARCHIVE_PROBE, str(archive)],
+            cwd=str(tmp_path),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 0, done.stderr
+        out = json.loads(done.stdout.strip().splitlines()[-1])
+
+        # Every module came out of the archive, not out of the repository.
+        for key in ("app_file", "risk_file", "cost_core_file"):
+            assert out[key].startswith(str(archive)), (key, out[key])
+
+        assert out["tool_version"] == M.TOOL_VERSION
+        assert out["lots"] == len(M.EXAMPLE_ESTIMATE)
+        assert out["total"] > 0
 
     def test_the_entry_point_is_importable(self):
         # main() has to be callable, not buried in a __main__ guard, or the
