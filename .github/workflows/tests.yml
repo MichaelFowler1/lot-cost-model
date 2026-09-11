@@ -19,11 +19,30 @@ jobs:
   # than 3.10. cost_core holds the same floor. The README says 3.9, so CI has
   # to hold it.
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        # The runner is named per lane rather than left at ubuntu-latest,
+        # because 3.9 is the one version that cannot follow it. setup-python
+        # has linux builds of 3.9 for Ubuntu images up to 24.04 and nothing
+        # newer, and as 3.9 is past end of life none is coming. The day
+        # ubuntu-latest moves to 26.04 an unpinned 3.9 lane fails at setup,
+        # and with it the only check that the tool still runs on the floor
+        # the README names. cost-core pins its 3.9 lane the same way.
+        include:
+          - python-version: "3.9"
+            runner: ubuntu-24.04
+          - python-version: "3.10"
+            runner: ubuntu-latest
+          - python-version: "3.11"
+            runner: ubuntu-latest
+          - python-version: "3.12"
+            runner: ubuntu-latest
+          - python-version: "3.13"
+            runner: ubuntu-latest
+          - python-version: "3.14"
+            runner: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -61,13 +80,18 @@ jobs:
   # dependencies it cannot carry, with the checkout off the path, which is the
   # machine a colleague actually has.
   archive:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         # The floor and the ceiling. The archive is plain source, so the
         # versions in between add nothing the suite above does not cover.
-        python-version: ["3.9", "3.14"]
+        # 3.9 stays on ubuntu-24.04 for the reason given on the tests job.
+        include:
+          - python-version: "3.9"
+            runner: ubuntu-24.04
+          - python-version: "3.14"
+            runner: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
