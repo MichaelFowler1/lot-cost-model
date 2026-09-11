@@ -59,8 +59,8 @@ jobs:
       - name: Check tkinter imports
         run: python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
 
-      # requirements.txt pins cost_core at the released tag, so this is the
-      # only place the library version is stated.
+      # requirements.txt pins cost_core at the released tag. lot_cost_model.py
+      # repeats that tag in its ImportError hint, so a bump touches both.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

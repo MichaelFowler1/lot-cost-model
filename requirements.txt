@@ -8,7 +8,7 @@ openpyxl
 # index for pip to resolve a range against. A PEP 508 direct reference at
 # the tag is the pin, and it only resolves while that tag exists on the
 # remote. Move the tag and this line has to move with it.
-cost_core @ git+https://github.com/MichaelFowler1/cost-risk-toolkit.git@v1.0.0
+cost_core @ git+https://github.com/MichaelFowler1/cost-risk-toolkit.git@v1.0.1
 
 # scipy comes in with cost_core rather than being asked for here. It is
 # what supplies the t, chi-square and normal quantiles the intervals and

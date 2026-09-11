@@ -50,7 +50,7 @@ if cost_core.__version__.split(".")[0] != "1":
         f"{cost_core.__version__}. Install the version this build was written "
         "against with:\n"
         "    pip install \"cost_core @ git+https://github.com/"
-        "MichaelFowler1/cost-risk-toolkit.git@v1.0.0\""
+        "MichaelFowler1/cost-risk-toolkit.git@v1.0.1\""
     )
 
 #: This tool's own version, not the library's. cost_core reports its own, and

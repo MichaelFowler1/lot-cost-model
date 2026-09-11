@@ -10,6 +10,14 @@ housekeeping detail here, because someone may have put the old one in a budget.
 
 ## [Unreleased]
 
+### Changed
+
+- The library pin moves from cost-core 1.0.0 to 1.0.1. No number moves with
+  it: 1.0.1 changes nothing but the library's own test suite, which 1.0.0's
+  shipped in a form that failed off Windows, and the version it reports. The engine, the roll-up and the workbook
+  writers are byte for byte what 1.0.0 installed, and the one visible
+  difference is the `cost_core version` row of the Analyst_Summary sheet.
+
 ## [3.0.0] - 2026-09-10
 
 The estimating engine, the WBS roll-up and the Excel workbook writers have
