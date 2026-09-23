@@ -295,9 +295,9 @@ timestamp, and whether the rate projection was the corrected one or the legacy
 one:
 
 ```
-Tool version       3.0.0 (612b8d4)
-cost_core version  1.0.1
-Run timestamp      2026-09-11 15:40:12 Eastern Daylight Time
+Tool version       4.0.0 (<git revision>)
+cost_core version  2.0.0
+Run timestamp      2026-09-23 14:05:31 Eastern Daylight Time
 Rate projection    corrected (projections satisfy the fitted equation)
 ```
 

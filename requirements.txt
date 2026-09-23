@@ -3,12 +3,12 @@ pandas
 openpyxl
 
 # The estimating engine, the WBS roll-up and the workbook writers all
-# live in cost_core now, so the tool does not start without it. A version
-# range cannot be used here: the library is not on PyPI, so there is no
-# index for pip to resolve a range against. A PEP 508 direct reference at
-# the tag is the pin, and it only resolves while that tag exists on the
-# remote. Move the tag and this line has to move with it.
-cost_core @ git+https://github.com/MichaelFowler1/cost-risk-toolkit.git@v1.0.1
+# live in cost_core now, so the tool does not start without it. It is on
+# PyPI as cost-core, and this pins the exact release the window was written
+# and tested against, because every number in a workbook comes from it.
+# lot_cost_model.py repeats the version in the hint it prints when the
+# library is missing or on the wrong major version, so a bump touches both.
+cost-core==2.0.0
 
 # scipy comes in with cost_core rather than being asked for here. It is
 # what supplies the t, chi-square and normal quantiles the intervals and

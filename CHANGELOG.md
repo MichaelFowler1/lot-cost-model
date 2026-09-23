@@ -10,6 +10,13 @@ housekeeping detail here, because someone may have put the old one in a budget.
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-09-23
+
+A license release, on top of the library's own. Every number the tool produces
+is the same as 3.0.0's. From here on it's offered under the PolyForm
+Noncommercial License 1.0.0, which is why this is 4.0.0 rather than 3.1.0, and
+it runs on cost-core 2.0.0, installed from PyPI.
+
 ### Changed
 
 - **The license changes for everything after 3.0.0**, from the MIT License to
@@ -22,13 +29,17 @@ housekeeping detail here, because someone may have put the old one in a budget.
   the software on to include, every source file opens with a copyright line
   and an SPDX license identifier, and the one-file archive now carries both
   licenses, the window's and the library's, so passing it on passes the terms
-  on too. The next release is numbered 4.0.0 for that reason.
+  on too.
 
-- The library pin moves from cost-core 1.0.0 to 1.0.1. No number moves with
-  it: 1.0.1 changes nothing but the library's own test suite, which 1.0.0's
-  shipped in a form that failed off Windows, and the version it reports. The engine, the roll-up and the workbook
-  writers are byte for byte what 1.0.0 installed, and the one visible
-  difference is the `cost_core version` row of the Analyst_Summary sheet.
+- The library pin moves from cost-core 1.0.0 to 2.0.0, and from a git tag to
+  PyPI, so `pip install -r requirements.txt` installs it like any other
+  package. No number moves with it. Between the two the library changed its
+  license, its own test suite, the axis of a chart the window never draws and
+  a line its command-line tool prints; the engine, the roll-up and the
+  workbook writers are the same code, and the one visible difference is the
+  `cost_core version` row of the Analyst_Summary sheet.
+- The startup check asks for cost_core 2.x, and says to install
+  `cost-core==2.0.0` when it finds anything else.
 
 ## [3.0.0] - 2026-09-10
 
@@ -113,6 +124,7 @@ anything you have briefed and compare before you rely on a 2.x figure.
   is refused rather than ignored.
 - Runs can be saved and reopened, and every workbook says which build made it.
 
-[Unreleased]: https://github.com/MichaelFowler1/lot-cost-model/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/MichaelFowler1/lot-cost-model/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/MichaelFowler1/lot-cost-model/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/MichaelFowler1/lot-cost-model/releases/tag/v3.0.0
 [2.1.0]: https://github.com/MichaelFowler1/lot-cost-model/commits/main

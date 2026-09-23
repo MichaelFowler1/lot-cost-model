@@ -42,18 +42,18 @@ from cost_core.lotmodel.provenance import provenance as _library_provenance
 
 import risk
 
-# The call sites below were written against cost_core 1.x: the analogy and
+# The call sites below were written against cost_core 2.x: the analogy and
 # estimate column names, the seven override keys, the four run-info keys, the
 # shape of run_lot_cost_model's return and the seven arguments of
-# save_complete_excel_workbook. A 2.x is free to move any of those, so refuse
-# to start rather than fail somewhere further in with a KeyError.
-if cost_core.__version__.split(".")[0] != "1":
+# save_complete_excel_workbook. 2.0.0 changed the library's license and none of
+# those. A 3.x is free to move any of them, so refuse to start rather than fail
+# somewhere further in with a KeyError.
+if cost_core.__version__.split(".")[0] != "2":
     raise ImportError(
-        f"Lot Cost Model needs cost_core 1.x and found "
+        f"Lot Cost Model needs cost_core 2.x and found "
         f"{cost_core.__version__}. Install the version this build was written "
         "against with:\n"
-        "    pip install \"cost_core @ git+https://github.com/"
-        "MichaelFowler1/cost-risk-toolkit.git@v1.0.1\""
+        "    pip install cost-core==2.0.0"
     )
 
 #: This tool's own version, not the library's. cost_core reports its own, and
@@ -62,8 +62,10 @@ if cost_core.__version__.split(".")[0] != "1":
 #: numbers, and a change to the library does not touch the window.
 #:
 #: 3.0.0 is where the engine, the roll-up and the workbook writers left this
-#: file for cost_core. The numbers move with them; see the CHANGELOG.
-TOOL_VERSION = "3.0.0"
+#: file for cost_core. The numbers move with them; see the CHANGELOG. 4.0.0
+#: changes the license and moves onto cost-core 2.0.0 from PyPI, and no
+#: number moves.
+TOOL_VERSION = "4.0.0"
 
 
 def _source_revision() -> str:
