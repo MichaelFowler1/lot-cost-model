@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Rolling several WBS elements into one programme estimate.
 
 The arithmetic here is easy to get right and easy to get subtly wrong, so

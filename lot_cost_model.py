@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Lot Cost Model - the desktop window.
 
 The estimating engine this file used to carry, the WBS roll-up and the Excel

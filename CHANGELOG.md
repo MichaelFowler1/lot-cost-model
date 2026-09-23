@@ -12,6 +12,18 @@ housekeeping detail here, because someone may have put the old one in a budget.
 
 ### Changed
 
+- **The license changes for everything after 3.0.0**, from the MIT License to
+  the PolyForm Noncommercial License 1.0.0. Noncommercial use stays free, and
+  so does use by schools and universities, public research organizations,
+  government institutions and charities, whatever their funding. Commercial
+  use now needs a license from the author. Nothing is withdrawn: 3.0.0 and
+  everything before it were released under MIT and stay under it. A new NOTICE
+  file carries the `Required Notice:` line the license obliges anyone passing
+  the software on to include, every source file opens with a copyright line
+  and an SPDX license identifier, and the one-file archive now carries both
+  licenses, the window's and the library's, so passing it on passes the terms
+  on too. The next release is numbered 4.0.0 for that reason.
+
 - The library pin moves from cost-core 1.0.0 to 1.0.1. No number moves with
   it: 1.0.1 changes nothing but the library's own test suite, which 1.0.0's
   shipped in a form that failed off Windows, and the version it reports. The engine, the roll-up and the workbook

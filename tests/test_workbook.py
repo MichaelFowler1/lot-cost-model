@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """The Excel output.
 
 Most of these exist because of failures that produced a perfectly valid
@@ -345,6 +348,17 @@ class TestSingleFileBuild:
             if sub.parent != package
         }
         assert expected <= names, sorted(expected - names)
+
+    def test_it_carries_the_licences_of_both_halves(self, archive):
+        # Passing the archive on passes on the window and a copy of the
+        # library, and both licences oblige whoever does that to pass their
+        # terms on with it. So the terms travel inside the one file: the
+        # window's at the top, the library's beside its copy of cost_core.
+        z = zipfile.ZipFile(archive)
+        names = set(z.namelist())
+        assert {"LICENSE", "NOTICE", "cost_core/LICENSE"} <= names
+        assert z.read("LICENSE") == (ROOT / "LICENSE").read_bytes()
+        assert "Required Notice:" in z.read("NOTICE").decode("utf-8")
 
     def test_the_archive_is_compressed(self, archive):
         # zipapp stores rather than deflates unless asked, which left the

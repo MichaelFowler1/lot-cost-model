@@ -1,0 +1,24 @@
+Lot Cost Model (lot-cost-model)
+Copyright 2026 Michael Fowler
+https://github.com/MichaelFowler1/lot-cost-model
+
+Required Notice: Copyright 2026 Michael Fowler (https://github.com/MichaelFowler1/lot-cost-model)
+
+This software is licensed under the PolyForm Noncommercial License 1.0.0 (see
+LICENSE, or https://polyformproject.org/licenses/noncommercial/1.0.0). Anyone
+who passes on a copy of any part of it has to pass on those terms, or their URL,
+and the Required Notice line above along with it.
+
+Any noncommercial purpose is free, and so is use by a charitable organization,
+educational institution, public research organization, public safety or health
+organization, environmental protection organization or government institution,
+whatever its funding. Commercial use needs a separate license from the author:
+ask through https://github.com/MichaelFowler1/lot-cost-model/issues.
+
+The one-file archive that tools/build_pyz.py builds also carries a copy of the
+cost-core library, which has its own license. The library's LICENSE and NOTICE
+travel inside the archive beside it, in cost_core/.
+
+Earlier versions: Lot Cost Model 3.0.0 and earlier, and every commit published
+before this license change, were released under the MIT License and stay under
+it. The PolyForm Noncommercial terms cover everything after them.

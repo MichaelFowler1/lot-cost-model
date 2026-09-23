@@ -268,6 +268,10 @@ Whoever runs it still needs numpy, pandas, openpyxl and scipy, because those are
 compiled and can't be imported out of a zip. matplotlib isn't needed. If they
 have those four, one file is the whole tool.
 
+Both licenses ride along inside it too: the window's LICENSE and NOTICE at the
+top of the archive, and the library's beside its copy of `cost_core`. Passing
+the file on passes the terms on with it.
+
 ## Saving a run
 
 The Run menu saves everything the window holds to a small JSON file: both sets
@@ -455,4 +459,21 @@ coefficient rather than on R² alone.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Versions up to and including 3.0.0 were released under the MIT License and stay
+that way. Everything after them is under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). In plain terms:
+
+- **Free for any noncommercial purpose**: personal study, research, teaching,
+  hobby projects.
+- **Free for schools and universities, public research organizations, government
+  institutions, charities, and public safety, health and environmental
+  organizations**, whatever their funding. A government cost office or a
+  university research lab can use it as it stands.
+- **Commercial use needs a license from the author.** That includes using it in
+  paid work for clients or building it into a product. Ask through
+  [the issue tracker](https://github.com/MichaelFowler1/lot-cost-model/issues).
+
+Anyone who passes on a copy of any part of it has to pass on the license terms
+and the `Required Notice:` line in [NOTICE](NOTICE) with it. The library it runs
+on, [cost-core](https://github.com/MichaelFowler1/cost-risk-toolkit), carries its
+own license. This is a plain summary; the LICENSE file is what governs.

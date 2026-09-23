@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """The projections must satisfy the equation the tool prints.
 
 This file exists because a 36% overstatement lived in the tool while every

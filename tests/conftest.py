@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Shared fixtures. Nothing here needs a display: the tests exercise the model
 and the workbook writer directly, never the Tk window."""
 

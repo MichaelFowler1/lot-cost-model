@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """The deterministic model: lot midpoints, unit tracking, and the fit."""
 
 from __future__ import annotations

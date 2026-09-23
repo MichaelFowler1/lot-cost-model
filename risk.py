@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Prediction intervals and Monte Carlo for the window's risk tab.
 
 The library computes the distribution; this module is the adapter between it

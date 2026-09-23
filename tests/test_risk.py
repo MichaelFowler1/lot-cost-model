@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """The cost_core bridge: intervals and the simulated buy total.
 
 The bridge hands cost_core the objects run_lot_cost_model already produced,

@@ -1,3 +1,6 @@
+# Copyright 2026 Michael Fowler
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
 """Bundle the tool into one runnable file.
 
 Somewhere that blocks executables will usually still run Python, so this
@@ -28,6 +31,13 @@ optional extra of the library in 1.0.0 and nothing the window does requires
 it. So this solves "several files and a git clone", not "no dependencies".
 Whoever runs the archive still needs those four installed.
 
+It also carries the licences of both halves. Passing the archive on passes on
+the window and a copy of the library, and both licences oblige whoever does
+that to pass their terms on with it, so the window's LICENSE and NOTICE go at
+the top of the archive and the library's go beside its copy of ``cost_core``.
+A library copy whose licence cannot be found stops the build, rather than going
+out without it.
+
 Usage:
     python tools/build_pyz.py [--out DIR]
 """
@@ -56,6 +66,9 @@ SKIP_DIRS = frozenset(
 #: Suffixes never worth carrying. Compiled bytecode is version-locked and
 #: the source sitting beside it is what actually gets imported.
 SKIP_SUFFIXES = (".pyc", ".pyo", ".pyd", ".so", ".orig", ".rej", ".swp")
+
+#: The licence files that travel with each half of the archive.
+LICENSE_FILES = ("LICENSE", "NOTICE")
 
 ENTRY = '''"""Entry point when the tool runs as a single .pyz archive."""
 import sys
@@ -90,6 +103,45 @@ def locate_cost_core() -> pathlib.Path:
     return pathlib.Path(list(spec.submodule_search_locations)[0]).resolve()
 
 
+def library_licence_files(package: pathlib.Path) -> list[pathlib.Path]:
+    """The licence files of the cost_core being vendored.
+
+    A source checkout is read directly: its LICENSE and NOTICE sit beside its
+    pyproject.toml. That has to win over the installed metadata, because an
+    editable install copies the licence into its dist-info once, at install
+    time, so a checkout that has changed licence since would vendor the old
+    terms. Anything else, a wheel in site-packages included, is read from the
+    distribution's own metadata, which is the licence that version shipped
+    with.
+    """
+    checkout = package.parent
+    pyproject = checkout / "pyproject.toml"
+    found: dict[str, pathlib.Path] = {}
+    if pyproject.is_file() and 'name = "cost-core"' in pyproject.read_text(encoding="utf-8"):
+        for name in LICENSE_FILES:
+            if (checkout / name).is_file():
+                found[name] = checkout / name
+    else:
+        from importlib.metadata import PackageNotFoundError, distribution
+
+        try:
+            dist = distribution("cost-core")
+        except PackageNotFoundError:
+            dist = None
+        for entry in (dist.files or ()) if dist is not None else ():
+            if entry.name in LICENSE_FILES and entry.name not in found:
+                path = pathlib.Path(dist.locate_file(entry))
+                if path.is_file():
+                    found[entry.name] = path
+    if "LICENSE" not in found:
+        raise SystemExit(
+            f"Cannot build: no LICENSE found for the cost_core at {package}. "
+            "The archive carries a copy of the library, and a copy that goes "
+            "out without its licence breaks the terms it is distributed under."
+        )
+    return list(found.values())
+
+
 def _vendor(package: pathlib.Path, staging: pathlib.Path) -> int:
     """Copy the package into the staging directory. Returns the file count."""
     copied = 0
@@ -112,7 +164,7 @@ def _vendor(package: pathlib.Path, staging: pathlib.Path) -> int:
 
 
 def build(root: pathlib.Path, out_dir: pathlib.Path) -> pathlib.Path:
-    missing = [m for m in MODULES if not (root / m).exists()]
+    missing = [m for m in (*MODULES, *LICENSE_FILES) if not (root / m).exists()]
     if missing:
         raise SystemExit(
             f"Cannot build: {missing} not found in {root}. Run this from the "
@@ -127,9 +179,11 @@ def build(root: pathlib.Path, out_dir: pathlib.Path) -> pathlib.Path:
     with tempfile.TemporaryDirectory() as tmp:
         staging = pathlib.Path(tmp) / "app"
         staging.mkdir()
-        for name in MODULES:
+        for name in (*MODULES, *LICENSE_FILES):
             shutil.copy2(root / name, staging / name)
         _vendor(package, staging)
+        for path in library_licence_files(package):
+            shutil.copy2(path, staging / package.name / path.name)
         (staging / "__main__.py").write_text(ENTRY, encoding="utf-8")
         # Compressed, not stored. The archive is mostly Python source, which
         # deflates to roughly a third, and it is meant to be copied around by
