@@ -10,6 +10,14 @@ housekeeping detail here, because someone may have put the old one in a budget.
 
 ## [Unreleased]
 
+### Changed
+
+- The library pin moves from cost-core 2.0.0 to 2.1.0. No number moves: 2.1.0
+  adds three subpackages (public SAR data, analysis of alternatives, portfolio
+  optimisation) that the window doesn't use, and the engine, the roll-up and
+  the workbook writers are the same code. The one visible difference is the
+  `cost_core version` row of the Analyst_Summary sheet, which reads 2.1.0.
+
 ## [4.0.0] - 2026-09-23
 
 A license release, on top of the library's own. Every number the tool produces
