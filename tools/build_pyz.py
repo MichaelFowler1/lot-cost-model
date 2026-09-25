@@ -67,8 +67,14 @@ SKIP_DIRS = frozenset(
 #: the source sitting beside it is what actually gets imported.
 SKIP_SUFFIXES = (".pyc", ".pyo", ".pyd", ".so", ".orig", ".rej", ".swp")
 
-#: The licence files that travel with each half of the archive.
+#: The licence files that travel with the window's half of the archive.
 LICENSE_FILES = ("LICENSE", "NOTICE")
+
+#: The library's, which from cost-core 2.3.1 include the additional permission
+#: for Government Work. It widens the library's licence, and the permission
+#: asks for it to go with any copy handed on, so the archive carries it too
+#: when the vendored library has it.
+LIBRARY_LICENSE_FILES = ("LICENSE", "NOTICE", "LICENSE-GOVERNMENT-WORK.md")
 
 ENTRY = '''"""Entry point when the tool runs as a single .pyz archive."""
 import sys
@@ -118,7 +124,7 @@ def library_licence_files(package: pathlib.Path) -> list[pathlib.Path]:
     pyproject = checkout / "pyproject.toml"
     found: dict[str, pathlib.Path] = {}
     if pyproject.is_file() and 'name = "cost-core"' in pyproject.read_text(encoding="utf-8"):
-        for name in LICENSE_FILES:
+        for name in LIBRARY_LICENSE_FILES:
             if (checkout / name).is_file():
                 found[name] = checkout / name
     else:
@@ -129,7 +135,7 @@ def library_licence_files(package: pathlib.Path) -> list[pathlib.Path]:
         except PackageNotFoundError:
             dist = None
         for entry in (dist.files or ()) if dist is not None else ():
-            if entry.name in LICENSE_FILES and entry.name not in found:
+            if entry.name in LIBRARY_LICENSE_FILES and entry.name not in found:
                 path = pathlib.Path(dist.locate_file(entry))
                 if path.is_file():
                     found[entry.name] = path

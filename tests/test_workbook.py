@@ -359,6 +359,11 @@ class TestSingleFileBuild:
         assert {"LICENSE", "NOTICE", "cost_core/LICENSE"} <= names
         assert z.read("LICENSE") == (ROOT / "LICENSE").read_bytes()
         assert "Required Notice:" in z.read("NOTICE").decode("utf-8")
+        # From 2.3.1 the library also carries its permission for Government
+        # Work, which travels with the copy of the library it widens.
+        import cost_core
+        if tuple(int(x) for x in cost_core.__version__.split(".")[:3]) >= (2, 3, 1):
+            assert "cost_core/LICENSE-GOVERNMENT-WORK.md" in names
 
     def test_the_archive_is_compressed(self, archive):
         # zipapp stores rather than deflates unless asked, which left the
@@ -377,6 +382,12 @@ class TestSingleFileBuild:
             # Model output and built archives. Both are gitignored, so they
             # are only ever here by accident, and a workbook full of real
             # program data is not something to hand a colleague by mistake.
+            # The one exception is the library's own bundled examples
+            # (cost_core/examples, from cost-core 2.3.0): invented data its
+            # demo and template commands load, part of the package as it
+            # ships, so the vendored copy keeps them.
+            if name.startswith("cost_core/examples/"):
+                continue
             assert not name.endswith((".xlsx", ".xls", ".csv", ".pyz")), name
 
     def test_the_archive_imports_and_prices(self, archive, tmp_path):
