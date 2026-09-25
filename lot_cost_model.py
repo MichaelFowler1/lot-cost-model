@@ -46,15 +46,15 @@ import risk
 # estimate column names, the seven override keys, the four run-info keys, the
 # shape of run_lot_cost_model's return and the seven arguments of
 # save_complete_excel_workbook. 2.0.0 changed the library's license and none of
-# those, and 2.1.0 added subpackages this window doesn't use. A 3.x is free to
-# move any of them, so refuse to start rather than fail somewhere further in
-# with a KeyError.
+# those, and 2.1.0 and 2.2.0 added subpackages this window doesn't use. A 3.x
+# is free to move any of them, so refuse to start rather than fail somewhere
+# further in with a KeyError.
 if cost_core.__version__.split(".")[0] != "2":
     raise ImportError(
         f"Lot Cost Model needs cost_core 2.x and found "
         f"{cost_core.__version__}. Install the version this build was written "
         "against with:\n"
-        "    pip install cost-core==2.1.0"
+        "    pip install cost-core==2.2.0"
     )
 
 #: This tool's own version, not the library's. cost_core reports its own, and

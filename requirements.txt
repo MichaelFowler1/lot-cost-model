@@ -8,7 +8,7 @@ openpyxl
 # and tested against, because every number in a workbook comes from it.
 # lot_cost_model.py repeats the version in the hint it prints when the
 # library is missing or on the wrong major version, so a bump touches both.
-cost-core==2.1.0
+cost-core==2.2.0
 
 # scipy comes in with cost_core rather than being asked for here. It is
 # what supplies the t, chi-square and normal quantiles the intervals and
