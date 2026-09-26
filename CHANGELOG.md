@@ -12,12 +12,12 @@ housekeeping detail here, because someone may have put the old one in a budget.
 
 ### Changed
 
-- The library pin moves from cost-core 2.0.0 to 2.4.1. No number moves:
-  2.1.0 to 2.4.1 add subpackages (public SAR data, analysis of alternatives,
+- The library pin moves from cost-core 2.0.0 to 2.4.2. No number moves:
+  2.1.0 to 2.4.2 add subpackages (public SAR data, analysis of alternatives,
   portfolio optimisation, schedule risk, earned value, cost risk and Excel
   inputs) that the window doesn't use, and the engine, the roll-up and the
   workbook writers are the same code. The one visible difference is the
-  `cost_core version` row of the Analyst_Summary sheet, which reads 2.4.1.
+  `cost_core version` row of the Analyst_Summary sheet, which reads 2.4.2.
   2.4.1 also fixes the risk summary's wording from "2th percentile" to
   "2nd percentile"; the number beside it is the same. The pin went through 2.1.0 on
   the way; 2.1.0 has since been yanked from PyPI for a portfolio

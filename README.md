@@ -296,7 +296,7 @@ one:
 
 ```
 Tool version       4.0.0 (<git revision>)
-cost_core version  2.4.1
+cost_core version  2.4.2
 Run timestamp      2026-09-23 14:05:31 Eastern Daylight Time
 Rate projection    corrected (projections satisfy the fitted equation)
 ```
