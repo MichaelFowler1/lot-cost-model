@@ -12,8 +12,8 @@ housekeeping detail here, because someone may have put the old one in a budget.
 
 ### Changed
 
-- The library pin moves from cost-core 2.0.0 to 2.7.0. No number moves on
-  the window's own inputs: 2.1.0 to 2.7.0 add subpackages (public SAR data,
+- The library pin moves from cost-core 2.0.0 to 2.8.0. No number moves on
+  the window's own inputs: 2.1.0 to 2.8.0 add subpackages (public SAR data,
   analysis of alternatives, portfolio optimisation, schedule risk, earned
   value, cost risk and Excel inputs) that the window doesn't use, and the
   roll-up and the workbook writers are the same code. 2.6.0 changes the
@@ -25,7 +25,8 @@ housekeeping detail here, because someone may have put the old one in a budget.
   all 50 projections the tests make are identical under 2.6.0 (numpy 2.4.6,
   scipy 1.17.1) and 2.7.0 (numpy 2.5.3, scipy 1.18.1). The one visible
   difference is the `cost_core version` row of the Analyst_Summary sheet,
-  which reads 2.7.0.
+  which reads 2.8.0. 2.8.0 adds cost-core's own window and styled templates
+  and changes no arithmetic.
   2.4.1 also fixes the risk summary's wording from "2th percentile" to
   "2nd percentile"; the number beside it is the same. The pin went through 2.1.0 on
   the way; 2.1.0 has since been yanked from PyPI for a portfolio
